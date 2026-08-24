@@ -1,0 +1,215 @@
+# =============================================================================
+# source-schema.yaml — ICA-02
+# Snowflake source tables, columns, types and export views
+# Database: CDP_UTIL_DB
+# =============================================================================
+ica_document: "ICA-02"
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+platform: "Snowflake"
+database: "CDP_UTIL_DB"
+
+schemas:
+  - name: "REF"
+    tables:
+      - name: "CODE_VALUE"
+        description: "Reference code values — rate plans, account status, customer type"
+        columns:
+          - {name: "CODE_VALUE_ID",  type: "NUMBER(10,0)",  nullable: false, pk: true,  note: "AUTOINCREMENT"}
+          - {name: "DOMAIN",         type: "VARCHAR(50)",   nullable: false, pk: false, note: "e.g. ACCT_STATUS, RATE_PLAN, CUST_TYPE"}
+          - {name: "CODE",           type: "VARCHAR(30)",   nullable: false, pk: false, unique_with: "DOMAIN"}
+          - {name: "CODE_LABEL",     type: "VARCHAR(500)",  nullable: false, pk: false, note: "Human-readable label ONLY — never JSON"}
+          - {name: "ATTRIBUTES",     type: "VARIANT",       nullable: true,  pk: false, note: "Machine-readable params for RATE_PLAN rows: {fixed,energy,demand,tax}"}
+          - {name: "DESCRIPTION",    type: "VARCHAR(500)",  nullable: true}
+          - {name: "DISPLAY_ORDER",  type: "NUMBER(5,0)",   nullable: true,  default: "0"}
+          - {name: "IS_ACTIVE",      type: "BOOLEAN",       nullable: false, default: "TRUE"}
+          - {name: "CREATED_AT",     type: "TIMESTAMP_TZ",  nullable: false, default: "CURRENT_TIMESTAMP()"}
+          - {name: "UPDATED_AT",     type: "TIMESTAMP_TZ",  nullable: false, default: "CURRENT_TIMESTAMP()", watermark: true}
+        business_key: ["DOMAIN", "CODE"]
+
+  - name: "CUSTOMER"
+    tables:
+      - name: "CUSTOMER"
+        description: "Customer master"
+        columns:
+          - {name: "CUSTOMER_ID",        type: "VARCHAR(20)",  nullable: false, pk: true,  note: "e.g. CUST-000001"}
+          - {name: "FIRST_NAME",         type: "VARCHAR(100)", nullable: false}
+          - {name: "LAST_NAME",          type: "VARCHAR(100)", nullable: false}
+          - {name: "MIDDLE_NAME",        type: "VARCHAR(100)", nullable: true}
+          - {name: "NAME_SUFFIX",        type: "VARCHAR(20)",  nullable: true}
+          - {name: "CUSTOMER_TYPE",      type: "VARCHAR(30)",  nullable: false, note: "RESIDENTIAL/COMMERCIAL/INDUSTRIAL"}
+          - {name: "DATE_OF_BIRTH",      type: "DATE",         nullable: true,  note: "Residential only; masked in exports"}
+          - {name: "SSN_LAST4",          type: "VARCHAR(4)",   nullable: true,  sensitivity: "PII — never exported"}
+          - {name: "TAX_ID",             type: "VARCHAR(20)",  nullable: true,  sensitivity: "PII — never exported"}
+          - {name: "PREFERRED_LANGUAGE", type: "VARCHAR(10)",  nullable: false, default: "'EN'"}
+          - {name: "ACCOUNT_STATUS",     type: "VARCHAR(30)",  nullable: false, note: "ACTIVE/INACTIVE/SUSPENDED/PENDING"}
+          - {name: "STATUS_REASON",      type: "VARCHAR(100)", nullable: true}
+          - {name: "CREATED_AT",         type: "TIMESTAMP_TZ", nullable: false, default: "CURRENT_TIMESTAMP()"}
+          - {name: "UPDATED_AT",         type: "TIMESTAMP_TZ", nullable: false, default: "CURRENT_TIMESTAMP()", watermark: true}
+        business_key: ["CUSTOMER_ID"]
+
+      - name: "CUSTOMER_CONTACT"
+        description: "Customer contact information — email, phone"
+        columns:
+          - {name: "CONTACT_ID",      type: "VARCHAR(20)",  nullable: false, pk: true}
+          - {name: "CUSTOMER_ID",     type: "VARCHAR(20)",  nullable: false, fk: "CUSTOMER.CUSTOMER_ID"}
+          - {name: "CONTACT_TYPE",    type: "VARCHAR(30)",  nullable: false, note: "EMAIL/PHONE/MAILING_ADDRESS"}
+          - {name: "CONTACT_VALUE",   type: "VARCHAR(500)", nullable: false}
+          - {name: "IS_PRIMARY",      type: "BOOLEAN",      nullable: false, default: "FALSE"}
+          - {name: "IS_VERIFIED",     type: "BOOLEAN",      nullable: false, default: "FALSE"}
+          - {name: "EFFECTIVE_DATE",  type: "DATE",         nullable: false}
+          - {name: "END_DATE",        type: "DATE",         nullable: true}
+          - {name: "CREATED_AT",      type: "TIMESTAMP_TZ", nullable: false, default: "CURRENT_TIMESTAMP()"}
+          - {name: "UPDATED_AT",      type: "TIMESTAMP_TZ", nullable: false, default: "CURRENT_TIMESTAMP()", watermark: true}
+
+      - name: "ENERGY_ACCOUNT"
+        description: "Energy/service accounts"
+        columns:
+          - {name: "ENERGY_ACCOUNT_ID", type: "VARCHAR(20)", nullable: false, pk: true,  note: "e.g. EA-000001"}
+          - {name: "CUSTOMER_ID",       type: "VARCHAR(20)", nullable: false, fk: "CUSTOMER.CUSTOMER_ID"}
+          - {name: "ACCOUNT_NUMBER",    type: "VARCHAR(30)", nullable: false, unique: true}
+          - {name: "ACCOUNT_STATUS",    type: "VARCHAR(30)", nullable: false}
+          - {name: "SERVICE_TYPE",      type: "VARCHAR(30)", nullable: false, default: "'ELECTRIC'"}
+          - {name: "RATE_CLASS",        type: "VARCHAR(30)", nullable: false}
+          - {name: "OPEN_DATE",         type: "DATE",        nullable: false}
+          - {name: "CLOSE_DATE",        type: "DATE",        nullable: true}
+          - {name: "CREATED_AT",        type: "TIMESTAMP_TZ",nullable: false, default: "CURRENT_TIMESTAMP()"}
+          - {name: "UPDATED_AT",        type: "TIMESTAMP_TZ",nullable: false, default: "CURRENT_TIMESTAMP()", watermark: true}
+        business_key: ["ENERGY_ACCOUNT_ID"]
+
+      - name: "BILLING_ACCOUNT"
+        description: "Billing configuration per energy account — effective-dated"
+        columns:
+          - {name: "BILLING_ACCOUNT_ID",  type: "VARCHAR(20)", nullable: false, pk: true}
+          - {name: "ENERGY_ACCOUNT_ID",   type: "VARCHAR(20)", nullable: false, fk: "CUSTOMER.ENERGY_ACCOUNT"}
+          - {name: "BILLING_ACCOUNT_NBR", type: "VARCHAR(30)", nullable: false}
+          - {name: "BILLING_CYCLE",       type: "VARCHAR(10)", nullable: false, note: "e.g. 01..20"}
+          - {name: "PAYMENT_METHOD",      type: "VARCHAR(30)", nullable: false, default: "'PAPER_BILL'"}
+          - {name: "AUTO_PAY_ENROLLED",   type: "BOOLEAN",     nullable: false, default: "FALSE"}
+          - {name: "PAPERLESS_ENROLLED",  type: "BOOLEAN",     nullable: false, default: "FALSE"}
+          - {name: "EFFECTIVE_DATE",      type: "DATE",        nullable: false}
+          - {name: "END_DATE",            type: "DATE",        nullable: true,  note: "NULL = current record"}
+          - {name: "CREATED_AT",          type: "TIMESTAMP_TZ",nullable: false}
+          - {name: "UPDATED_AT",          type: "TIMESTAMP_TZ",nullable: false, watermark: true}
+
+  - name: "SERVICE"
+    tables:
+      - name: "PREMISE"
+        description: "Service premises — physical delivery locations"
+        columns:
+          - {name: "PREMISE_ID",       type: "VARCHAR(20)",   nullable: false, pk: true}
+          - {name: "ENERGY_ACCOUNT_ID",type: "VARCHAR(20)",   nullable: false, fk: "CUSTOMER.ENERGY_ACCOUNT"}
+          - {name: "ADDRESS_LINE1",    type: "VARCHAR(200)",  nullable: false}
+          - {name: "ADDRESS_LINE2",    type: "VARCHAR(200)",  nullable: true}
+          - {name: "CITY",             type: "VARCHAR(100)",  nullable: false}
+          - {name: "STATE_CODE",       type: "VARCHAR(2)",    nullable: false}
+          - {name: "ZIP_CODE",         type: "VARCHAR(10)",   nullable: false}
+          - {name: "COUNTY",           type: "VARCHAR(100)",  nullable: true}
+          - {name: "GEO_LATITUDE",     type: "NUMBER(10,6)",  nullable: true}
+          - {name: "GEO_LONGITUDE",    type: "NUMBER(11,6)",  nullable: true}
+          - {name: "PREMISE_TYPE",     type: "VARCHAR(30)",   nullable: true,  note: "RESIDENTIAL/COMMERCIAL"}
+          - {name: "EFFECTIVE_DATE",   type: "DATE",          nullable: false}
+          - {name: "END_DATE",         type: "DATE",          nullable: true}
+          - {name: "CREATED_AT",       type: "TIMESTAMP_TZ",  nullable: false}
+          - {name: "UPDATED_AT",       type: "TIMESTAMP_TZ",  nullable: false, watermark: true}
+
+      - name: "METER"
+        description: "Electricity meters installed at premises"
+        columns:
+          - {name: "METER_ID",       type: "VARCHAR(20)",  nullable: false, pk: true}
+          - {name: "PREMISE_ID",     type: "VARCHAR(20)",  nullable: false, fk: "SERVICE.PREMISE"}
+          - {name: "METER_NUMBER",   type: "VARCHAR(30)",  nullable: false, unique: true}
+          - {name: "METER_TYPE",     type: "VARCHAR(30)",  nullable: false, default: "'ANALOG'", note: "ANALOG/SMART/AMI"}
+          - {name: "MANUFACTURER",   type: "VARCHAR(100)", nullable: true}
+          - {name: "MODEL",          type: "VARCHAR(100)", nullable: true}
+          - {name: "INSTALL_DATE",   type: "DATE",         nullable: false}
+          - {name: "REMOVAL_DATE",   type: "DATE",         nullable: true}
+          - {name: "IS_ACTIVE",      type: "BOOLEAN",      nullable: false, default: "TRUE"}
+          - {name: "CREATED_AT",     type: "TIMESTAMP_TZ", nullable: false}
+          - {name: "UPDATED_AT",     type: "TIMESTAMP_TZ", nullable: false, watermark: true}
+
+  - name: "BILLING"
+    tables:
+      - name: "MONTHLY_USAGE"
+        description: "Monthly electricity usage and billing"
+        columns:
+          - {name: "USAGE_ID",             type: "VARCHAR(30)",   nullable: false, pk: true,  note: "e.g. USG-2024-06-EA000001"}
+          - {name: "ENERGY_ACCOUNT_ID",    type: "VARCHAR(20)",   nullable: false}
+          - {name: "PREMISE_ID",           type: "VARCHAR(20)",   nullable: false}
+          - {name: "METER_ID",             type: "VARCHAR(20)",   nullable: false}
+          - {name: "BILLING_MONTH",        type: "VARCHAR(7)",    nullable: false, note: "YYYY-MM format"}
+          - {name: "BILL_START_DATE",      type: "DATE",          nullable: false}
+          - {name: "BILL_END_DATE",        type: "DATE",          nullable: false}
+          - {name: "BILLING_DAYS",         type: "NUMBER(3,0)",   nullable: false}
+          - {name: "KWH_USAGE",            type: "NUMBER(12,3)",  nullable: false}
+          - {name: "KWH_ADJUSTED",         type: "NUMBER(12,3)",  nullable: true}
+          - {name: "PEAK_DEMAND_KW",       type: "NUMBER(10,3)",  nullable: true}
+          - {name: "PREV_METER_READING",   type: "NUMBER(12,3)",  nullable: true}
+          - {name: "CURR_METER_READING",   type: "NUMBER(12,3)",  nullable: true}
+          - {name: "READ_TYPE",            type: "VARCHAR(10)",   nullable: false, default: "'ACTUAL'", note: "ACTUAL/ESTIMATED"}
+          - {name: "RATE_PLAN",            type: "VARCHAR(30)",   nullable: false, note: "FK to REF.CODE_VALUE DOMAIN=RATE_PLAN"}
+          - {name: "FIXED_CHARGE",         type: "NUMBER(10,2)",  nullable: true,  note: "Stored but charge calc is in view"}
+          - {name: "ENERGY_CHARGE",        type: "NUMBER(10,2)",  nullable: true}
+          - {name: "DEMAND_CHARGE",        type: "NUMBER(10,2)",  nullable: true}
+          - {name: "SUBTOTAL_CHARGE",      type: "NUMBER(10,2)",  nullable: true}
+          - {name: "TAX_AMOUNT",           type: "NUMBER(10,2)",  nullable: true}
+          - {name: "TOTAL_BILLED",         type: "NUMBER(10,2)",  nullable: true}
+          - {name: "IS_CORRECTION",        type: "BOOLEAN",       nullable: false, default: "FALSE"}
+          - {name: "CORRECTION_REASON",    type: "VARCHAR(200)",  nullable: true}
+          - {name: "CREATED_AT",           type: "TIMESTAMP_TZ",  nullable: false}
+          - {name: "UPDATED_AT",           type: "TIMESTAMP_TZ",  nullable: false, watermark: true}
+        business_key: ["USAGE_ID"]
+        alternate_key: ["ENERGY_ACCOUNT_ID", "BILLING_MONTH"]
+
+  - name: "STAGING"
+    views:
+      - name: "VW_DAILY_CUSTOMER_EXPORT"
+        description: "Customer-grain export view. One row per CUSTOMER. Includes all customers even without energy accounts."
+        grain: "CUSTOMER"
+        load_types: ["INITIAL", "DAILY"]
+        watermark_column: "RECORD_EFFECTIVE_TS"
+        stable_id_column: "CUSTOMER_ID"
+        computed_columns:
+          - {name: "FULL_NAME_NORMALIZED",  expression: "TRIM(UPPER(FIRST_NAME)||' '||COALESCE(UPPER(MIDDLE_NAME)||' ','')||UPPER(LAST_NAME))", rule: "TR-COMB-01"}
+          - {name: "IS_INACTIVE",           expression: "CASE WHEN ACCOUNT_STATUS='INACTIVE' THEN TRUE ELSE FALSE END",                         rule: "TR-SOFT-DEL"}
+          - {name: "ACCT_STATUS_LABEL",     expression: "LEFT JOIN REF.CODE_VALUE WHERE DOMAIN='ACCT_STATUS'",                                  rule: "TR-REF-01"}
+          - {name: "CUST_TYPE_LABEL",       expression: "LEFT JOIN REF.CODE_VALUE WHERE DOMAIN='CUST_TYPE'",                                    rule: "TR-REF-02"}
+          - {name: "RECORD_EFFECTIVE_TS",   expression: "GREATEST(COALESCE(c.UPDATED_AT,'1970-01-01'),COALESCE(pe.EMAIL_UPDATED_AT,'1970-01-01'),COALESCE(pp.PHONE_UPDATED_AT,'1970-01-01'))", rule: "WM-COMP"}
+
+      - name: "VW_DAILY_CUSTOMER_ACCOUNT_EXPORT"
+        description: "Account-grain export view. One row per ENERGY_ACCOUNT. Seven-table join."
+        grain: "ENERGY_ACCOUNT"
+        load_types: ["INITIAL", "DAILY"]
+        watermark_column: "RECORD_EFFECTIVE_TS"
+        stable_id_column: "ENERGY_ACCOUNT_ID"
+        contributing_tables: ["CUSTOMER.ENERGY_ACCOUNT", "CUSTOMER.CUSTOMER", "CUSTOMER.CUSTOMER_CONTACT(email)", "CUSTOMER.CUSTOMER_CONTACT(phone)", "CUSTOMER.BILLING_ACCOUNT", "SERVICE.PREMISE", "SERVICE.METER", "REF.CODE_VALUE(ACCT_STATUS)", "REF.CODE_VALUE(CUST_TYPE)"]
+        deduplication:
+          - "QUALIFY ROW_NUMBER() OVER (PARTITION BY CUSTOMER_ID ORDER BY EFFECTIVE_DATE DESC) = 1  -- primary email/phone"
+          - "QUALIFY ROW_NUMBER() OVER (PARTITION BY ENERGY_ACCOUNT_ID ORDER BY EFFECTIVE_DATE DESC) = 1  -- current billing"
+          - "QUALIFY ROW_NUMBER() OVER (PARTITION BY ENERGY_ACCOUNT_ID ORDER BY EFFECTIVE_DATE DESC) = 1  -- current premise"
+          - "QUALIFY ROW_NUMBER() OVER (PARTITION BY PREMISE_ID ORDER BY INSTALL_DATE DESC) = 1  -- active meter"
+        computed_columns:
+          - {name: "FULL_NAME_NORMALIZED",  expression: "TRIM(UPPER(FIRST_NAME)||' '||COALESCE(UPPER(MIDDLE_NAME)||' ','')||UPPER(LAST_NAME))", rule: "TR-COMB-01"}
+          - {name: "FULL_ADDRESS",          expression: "TRIM(ADDRESS_LINE1||COALESCE(', '||ADDRESS_LINE2,'')||', '||CITY||', '||STATE_CODE||' '||ZIP_CODE)", rule: "TR-COMB-02"}
+          - {name: "RECORD_EFFECTIVE_TS",   expression: "GREATEST(COALESCE(c.UPDATED_AT,'1970-01-01'),COALESCE(ea.UPDATED_AT,'1970-01-01'),COALESCE(cb.BA_UPDATED_AT,'1970-01-01'),COALESCE(cp.PREM_UPDATED_AT,'1970-01-01'),COALESCE(am.MTR_UPDATED_AT,'1970-01-01'),COALESCE(pe.EMAIL_UPDATED_AT,'1970-01-01'),COALESCE(pp.PHONE_UPDATED_AT,'1970-01-01'))", rule: "WM-COMP"}
+
+      - name: "VW_MONTHLY_USAGE_BILLING_EXPORT"
+        description: "Monthly usage export view with Snowflake-computed charge calculations."
+        grain: "USAGE_ID"
+        load_types: ["INITIAL", "MONTHLY"]
+        watermark_column: "UPDATED_AT"
+        stable_id_column: "USAGE_ID"
+        contributing_tables: ["BILLING.MONTHLY_USAGE", "REF.CODE_VALUE(RATE_PLAN)"]
+        computed_columns:
+          - {name: "KWH_EFFECTIVE",       expression: "COALESCE(KWH_ADJUSTED, KWH_USAGE)",                  rule: "TR-USAGE-01"}
+          - {name: "FIXED_RATE",          expression: "TRY_TO_DECIMAL(ATTRIBUTES['fixed']::STRING,10,2)",   rule: "TR-BILL-02"}
+          - {name: "ENERGY_RATE_PER_KWH", expression: "TRY_TO_DECIMAL(ATTRIBUTES['energy']::STRING,10,6)",  rule: "TR-BILL-03"}
+          - {name: "DEMAND_RATE_PER_KW",  expression: "TRY_TO_DECIMAL(ATTRIBUTES['demand']::STRING,10,6)",  rule: "MU-AC-09"}
+          - {name: "TAX_RATE",            expression: "TRY_TO_DECIMAL(ATTRIBUTES['tax']::STRING,10,6)",     rule: "TR-BILL-06"}
+          - {name: "CALC_FIXED_CHARGE",   expression: "FIXED_RATE  (direct pass-through; NULL if rate absent)", rule: "TR-BILL-02"}
+          - {name: "CALC_ENERGY_CHARGE",  expression: "ROUND(KWH_USAGE * ENERGY_RATE_PER_KWH, 2)",          rule: "TR-BILL-03"}
+          - {name: "CALC_DEMAND_CHARGE",  expression: "CASE WHEN PEAK_DEMAND_KW IS NOT NULL AND DEMAND_RATE_PER_KW IS NOT NULL THEN ROUND(PEAK_DEMAND_KW*DEMAND_RATE_PER_KW,2) ELSE 0 END", rule: "MU-AC-09"}
+          - {name: "CALC_SUBTOTAL",       expression: "FIXED_RATE + CALC_ENERGY_CHARGE + CALC_DEMAND_CHARGE", rule: "TR-BILL-04"}
+          - {name: "CALC_TAX_AMOUNT",     expression: "ROUND(CALC_SUBTOTAL * TAX_RATE, 2)",                  rule: "TR-BILL-06"}
+          - {name: "CALC_TOTAL_BILLED",   expression: "CALC_SUBTOTAL + CALC_TAX_AMOUNT",                    rule: "TR-BILL-07"}
+          - {name: "USAGE_QUALITY_STATUS",expression: "CASE WHEN READ_TYPE='ESTIMATED' THEN 'ESTIMATED' WHEN IS_CORRECTION=TRUE THEN 'CORRECTED' ELSE 'ACTUAL' END", rule: "TR-QUALITY-01"}

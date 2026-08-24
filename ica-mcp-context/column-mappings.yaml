@@ -1,0 +1,876 @@
+# =============================================================================
+# ICA/MCP Context — Column Mappings
+# =============================================================================
+# Authoritative column-level mapping matrix derived directly from DDL:
+#   SOURCE: infra/snowflake/03-create-source-tables.sql
+#           infra/snowflake/04-create-export-views.sql (view column aliases)
+#   TARGET: V004__create_target_business_tables.sql
+#
+# Format per mapping entry:
+#   source_view   — Snowflake STAGING view column name
+#   source_table  — underlying Snowflake table.column (if direct)
+#   java_type     — Java type used in domain model / processor
+#   transformation — computation applied (DIRECT = pass-through)
+#   validation    — validation rule codes applied in processor
+#   oracle_table  — target Oracle table
+#   oracle_column — target Oracle column
+#   merge_key     — Y if this column is part of the MERGE ON clause
+#   notes         — cross-reference / caveats
+#
+# ICA rule codes: TR-* = transformation, VR-* = validation,
+#                 MU-* = monthly usage, MK-* = merge key
+# =============================================================================
+
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+artifact: column-mappings
+
+# ============================================================================
+# ENTITY: Customer  (VW_DAILY_CUSTOMER_EXPORT → TGT_CUSTOMER)
+# ============================================================================
+customer_mappings:
+
+  - source_view: CUSTOMER_ID
+    source_table: CUSTOMER.CUSTOMER.CUSTOMER_ID
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-CUST-001]   # required, not blank
+    oracle_table: TGT_CUSTOMER
+    oracle_column: CUSTOMER_ID
+    merge_key: Y
+    notes: Business primary key. Max 20 chars.
+
+  - source_view: FIRST_NAME
+    source_table: CUSTOMER.CUSTOMER.FIRST_NAME
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-CUST-002]   # required
+    oracle_table: TGT_CUSTOMER
+    oracle_column: FIRST_NAME
+    merge_key: N
+
+  - source_view: LAST_NAME
+    source_table: CUSTOMER.CUSTOMER.LAST_NAME
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-CUST-002]
+    oracle_table: TGT_CUSTOMER
+    oracle_column: LAST_NAME
+    merge_key: N
+
+  - source_view: MIDDLE_NAME
+    source_table: CUSTOMER.CUSTOMER.MIDDLE_NAME
+    java_type: String
+    transformation: DIRECT
+    validation: []
+    oracle_table: TGT_CUSTOMER
+    oracle_column: MIDDLE_NAME
+    merge_key: N
+    notes: Nullable.
+
+  - source_view: NAME_SUFFIX
+    source_table: CUSTOMER.CUSTOMER.NAME_SUFFIX
+    java_type: String
+    transformation: DIRECT
+    validation: []
+    oracle_table: TGT_CUSTOMER
+    oracle_column: NAME_SUFFIX
+    merge_key: N
+    notes: Nullable.
+
+  - source_view: FULL_NAME_NORMALIZED
+    source_table: "(derived in view)"
+    java_type: String
+    transformation: >
+      TR-COMB-01: TRIM(UPPER(FIRST_NAME) || ' ' || COALESCE(UPPER(MIDDLE_NAME)||' ','') || UPPER(LAST_NAME))
+      Computed by view; passed through as-is.  Java processor validates not blank.
+    validation: [VR-CUST-002]
+    oracle_table: TGT_CUSTOMER
+    oracle_column: FULL_NAME_NORMALIZED
+    merge_key: N
+    notes: View column alias FULL_NAME_NORMALIZED.
+
+  - source_view: CUSTOMER_TYPE
+    source_table: CUSTOMER.CUSTOMER.CUSTOMER_TYPE
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-CUST-003]   # must be RESIDENTIAL|COMMERCIAL|INDUSTRIAL
+    oracle_table: TGT_CUSTOMER
+    oracle_column: CUSTOMER_TYPE
+    merge_key: N
+
+  - source_view: CUST_TYPE_LABEL
+    source_table: "REF.CODE_VALUE.CODE_LABEL (DOMAIN=CUST_TYPE)"
+    java_type: String
+    transformation: DIRECT (LEFT JOIN resolved in view)
+    validation: []
+    oracle_table: TGT_CUSTOMER
+    oracle_column: CUSTOMER_TYPE_LABEL
+    merge_key: N
+    notes: Nullable — may be null if code not found in ref table.
+
+  - source_view: PREFERRED_LANGUAGE
+    source_table: CUSTOMER.CUSTOMER.PREFERRED_LANGUAGE
+    java_type: String
+    transformation: DIRECT
+    validation: []
+    oracle_table: TGT_CUSTOMER
+    oracle_column: PREFERRED_LANGUAGE
+    merge_key: N
+    notes: Default 'EN'. Oracle column has DEFAULT 'EN' NOT NULL.
+
+  - source_view: CUSTOMER_STATUS
+    source_table: "CUSTOMER.CUSTOMER.ACCOUNT_STATUS (aliased as CUSTOMER_STATUS)"
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-CUST-004]   # must be ACTIVE|INACTIVE|SUSPENDED|PENDING
+    oracle_table: TGT_CUSTOMER
+    oracle_column: ACCOUNT_STATUS
+    merge_key: N
+
+  - source_view: ACCT_STATUS_LABEL
+    source_table: "REF.CODE_VALUE.CODE_LABEL (DOMAIN=ACCT_STATUS)"
+    java_type: String
+    transformation: DIRECT
+    validation: []
+    oracle_table: TGT_CUSTOMER
+    oracle_column: ACCOUNT_STATUS_LABEL
+    merge_key: N
+    notes: Nullable.
+
+  - source_view: IS_INACTIVE
+    source_table: "(derived in view)"
+    java_type: boolean
+    transformation: >
+      CASE WHEN CUSTOMER_STATUS = 'INACTIVE' THEN TRUE ELSE FALSE END
+      Java: IS_ACTIVE = isInactive ? 0 : 1 (inverted for Oracle)
+    validation: []
+    oracle_table: TGT_CUSTOMER
+    oracle_column: IS_ACTIVE
+    merge_key: N
+    notes: Oracle stores IS_ACTIVE (1=active, 0=inactive). View produces IS_INACTIVE boolean. Processor inverts.
+
+  - source_view: UPDATED_AT
+    source_table: CUSTOMER.CUSTOMER.UPDATED_AT
+    java_type: OffsetDateTime
+    transformation: "Map TIMESTAMP_TZ → java.sql.Timestamp (UTC preserved)"
+    validation: []
+    oracle_table: TGT_CUSTOMER
+    oracle_column: SOURCE_UPDATED_AT
+    merge_key: N
+    notes: Stored in Oracle as TIMESTAMP (UTC). TGT_CUSTOMER.SOURCE_UPDATED_AT.
+
+  - source_view: "(not from view)"
+    source_table: N/A
+    java_type: long
+    transformation: "Set by Spring Batch job: ETL_JOB_RUN.RUN_ID"
+    validation: []
+    oracle_table: TGT_CUSTOMER
+    oracle_column: ETL_RUN_ID
+    merge_key: N
+
+  - source_view: "(not from view)"
+    source_table: N/A
+    java_type: Instant
+    transformation: "Set by writer: SYS_EXTRACT_UTC(SYSTIMESTAMP) on first INSERT only — preserved on MERGE UPDATE"
+    validation: []
+    oracle_table: TGT_CUSTOMER
+    oracle_column: CREATED_AT
+    merge_key: N
+    notes: Oracle DEFAULT handles INSERT; MERGE must NOT overwrite on UPDATE.
+
+  - source_view: "(not from view)"
+    source_table: N/A
+    java_type: Instant
+    transformation: "Set by writer on every MERGE UPDATE: current UTC"
+    validation: []
+    oracle_table: TGT_CUSTOMER
+    oracle_column: UPDATED_AT
+    merge_key: N
+
+  # Columns intentionally not mapped (present in source, not in export view):
+  # DATE_OF_BIRTH — excluded from VW_DAILY_CUSTOMER_EXPORT (PII — not required for CDP)
+  # SSN_LAST4     — excluded from VW_DAILY_CUSTOMER_EXPORT (PII)
+  # STATUS_REASON — excluded from VW_DAILY_CUSTOMER_EXPORT
+  # EMAIL_ADDRESS / EMAIL_VERIFIED / PHONE_NUMBER — loaded into TGT_CUSTOMER_CONTACT (separate entity)
+
+# ============================================================================
+# ENTITY: EnergyAccount  (VW_DAILY_CUSTOMER_ACCOUNT_EXPORT → TGT_ENERGY_ACCOUNT)
+# ============================================================================
+energy_account_mappings:
+
+  - source_view: ENERGY_ACCOUNT_ID
+    source_table: CUSTOMER.ENERGY_ACCOUNT.ENERGY_ACCOUNT_ID
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-EA-001]    # required
+    oracle_table: TGT_ENERGY_ACCOUNT
+    oracle_column: ENERGY_ACCOUNT_ID
+    merge_key: Y
+
+  - source_view: CUSTOMER_ID
+    source_table: CUSTOMER.ENERGY_ACCOUNT.CUSTOMER_ID
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-EA-002]    # required; FK — customer must exist in TGT_CUSTOMER
+    oracle_table: TGT_ENERGY_ACCOUNT
+    oracle_column: CUSTOMER_ID
+    merge_key: N
+
+  - source_view: ACCOUNT_NUMBER
+    source_table: CUSTOMER.ENERGY_ACCOUNT.ACCOUNT_NUMBER
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-EA-003]    # required
+    oracle_table: TGT_ENERGY_ACCOUNT
+    oracle_column: ACCOUNT_NUMBER
+    merge_key: N
+
+  - source_view: ACCOUNT_STATUS
+    source_table: CUSTOMER.ENERGY_ACCOUNT.ACCOUNT_STATUS
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-EA-004]    # must be ACTIVE|INACTIVE|SUSPENDED|PENDING
+    oracle_table: TGT_ENERGY_ACCOUNT
+    oracle_column: ACCOUNT_STATUS
+    merge_key: N
+
+  - source_view: SERVICE_TYPE
+    source_table: CUSTOMER.ENERGY_ACCOUNT.SERVICE_TYPE
+    java_type: String
+    transformation: DIRECT
+    validation: []
+    oracle_table: TGT_ENERGY_ACCOUNT
+    oracle_column: SERVICE_TYPE
+    merge_key: N
+    notes: Default 'ELECTRIC'.
+
+  - source_view: RATE_CLASS
+    source_table: CUSTOMER.ENERGY_ACCOUNT.RATE_CLASS
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-EA-005]    # required
+    oracle_table: TGT_ENERGY_ACCOUNT
+    oracle_column: RATE_CLASS
+    merge_key: N
+
+  - source_view: OPEN_DATE
+    source_table: CUSTOMER.ENERGY_ACCOUNT.OPEN_DATE
+    java_type: LocalDate
+    transformation: "DATE → java.sql.Date"
+    validation: [VR-EA-006]    # required
+    oracle_table: TGT_ENERGY_ACCOUNT
+    oracle_column: OPEN_DATE
+    merge_key: N
+
+  - source_view: CLOSE_DATE
+    source_table: CUSTOMER.ENERGY_ACCOUNT.CLOSE_DATE
+    java_type: LocalDate
+    transformation: "DATE → java.sql.Date (nullable)"
+    validation: []
+    oracle_table: TGT_ENERGY_ACCOUNT
+    oracle_column: CLOSE_DATE
+    merge_key: N
+
+  - source_view: RECORD_EFFECTIVE_TS
+    source_table: "(derived in view — GREATEST of all contributing UPDATED_AT)"
+    java_type: OffsetDateTime
+    transformation: "Map TIMESTAMP_TZ → java.sql.Timestamp (UTC)"
+    validation: []
+    oracle_table: TGT_ENERGY_ACCOUNT
+    oracle_column: SOURCE_UPDATED_AT
+    merge_key: N
+    notes: Composite watermark. Stored as SOURCE_UPDATED_AT for traceability.
+
+  - source_view: "(derived)"
+    source_table: N/A
+    java_type: "int (0 or 1)"
+    transformation: "CLOSE_DATE IS NULL → IS_ACTIVE=1; else IS_ACTIVE=0"
+    validation: []
+    oracle_table: TGT_ENERGY_ACCOUNT
+    oracle_column: IS_ACTIVE
+    merge_key: N
+
+# ============================================================================
+# ENTITY: BillingAccount  (VW_DAILY_CUSTOMER_ACCOUNT_EXPORT → TGT_BILLING_ACCOUNT)
+# ============================================================================
+billing_account_mappings:
+
+  - source_view: BILLING_ACCOUNT_ID
+    source_table: CUSTOMER.BILLING_ACCOUNT.BILLING_ACCOUNT_ID
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-BA-001]    # required
+    oracle_table: TGT_BILLING_ACCOUNT
+    oracle_column: BILLING_ACCOUNT_ID
+    merge_key: Y
+
+  - source_view: ENERGY_ACCOUNT_ID
+    source_table: CUSTOMER.BILLING_ACCOUNT.ENERGY_ACCOUNT_ID
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-BA-002]    # required; FK
+    oracle_table: TGT_BILLING_ACCOUNT
+    oracle_column: ENERGY_ACCOUNT_ID
+    merge_key: N
+
+  - source_view: BILLING_ACCOUNT_NBR
+    source_table: CUSTOMER.BILLING_ACCOUNT.BILLING_ACCOUNT_NBR
+    java_type: String
+    transformation: DIRECT
+    validation: []
+    oracle_table: TGT_BILLING_ACCOUNT
+    oracle_column: BILLING_ACCOUNT_NBR
+    merge_key: N
+
+  - source_view: BILLING_CYCLE
+    source_table: CUSTOMER.BILLING_ACCOUNT.BILLING_CYCLE
+    java_type: String
+    transformation: DIRECT
+    validation: []
+    oracle_table: TGT_BILLING_ACCOUNT
+    oracle_column: BILLING_CYCLE
+    merge_key: N
+
+  - source_view: PAYMENT_METHOD
+    source_table: CUSTOMER.BILLING_ACCOUNT.PAYMENT_METHOD
+    java_type: String
+    transformation: DIRECT
+    validation: []
+    oracle_table: TGT_BILLING_ACCOUNT
+    oracle_column: PAYMENT_METHOD
+    merge_key: N
+
+  - source_view: AUTO_PAY_ENROLLED
+    source_table: CUSTOMER.BILLING_ACCOUNT.AUTO_PAY_ENROLLED
+    java_type: boolean
+    transformation: "BOOLEAN → NUMBER(1,0): true→1, false→0"
+    validation: []
+    oracle_table: TGT_BILLING_ACCOUNT
+    oracle_column: AUTO_PAY_ENROLLED
+    merge_key: N
+
+  - source_view: PAPERLESS_ENROLLED
+    source_table: CUSTOMER.BILLING_ACCOUNT.PAPERLESS_ENROLLED
+    java_type: boolean
+    transformation: "BOOLEAN → NUMBER(1,0): true→1, false→0"
+    validation: []
+    oracle_table: TGT_BILLING_ACCOUNT
+    oracle_column: PAPERLESS_ENROLLED
+    merge_key: N
+
+  - source_view: "(from current_billing CTE)"
+    source_table: CUSTOMER.BILLING_ACCOUNT.EFFECTIVE_DATE
+    java_type: LocalDate
+    transformation: DIRECT
+    validation: []
+    oracle_table: TGT_BILLING_ACCOUNT
+    oracle_column: EFFECTIVE_DATE
+    merge_key: N
+    notes: Not directly in main SELECT of view but available from BILLING_ACCOUNT source. Carried through CustomerAccountRecord.
+
+  - source_view: "(from current_billing CTE)"
+    source_table: CUSTOMER.BILLING_ACCOUNT.END_DATE
+    java_type: LocalDate
+    transformation: DIRECT (nullable)
+    validation: []
+    oracle_table: TGT_BILLING_ACCOUNT
+    oracle_column: END_DATE
+    merge_key: N
+
+  - source_view: "(derived)"
+    source_table: N/A
+    java_type: "int (0 or 1)"
+    transformation: "END_DATE IS NULL → IS_CURRENT=1; else IS_CURRENT=0"
+    validation: []
+    oracle_table: TGT_BILLING_ACCOUNT
+    oracle_column: IS_CURRENT
+    merge_key: N
+
+# ============================================================================
+# ENTITY: Premise  (VW_DAILY_CUSTOMER_ACCOUNT_EXPORT → TGT_PREMISE)
+# ============================================================================
+premise_mappings:
+
+  - source_view: PREMISE_ID
+    source_table: SERVICE.PREMISE.PREMISE_ID
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-PREM-001]   # required
+    oracle_table: TGT_PREMISE
+    oracle_column: PREMISE_ID
+    merge_key: Y
+
+  - source_view: ENERGY_ACCOUNT_ID
+    source_table: SERVICE.PREMISE.ENERGY_ACCOUNT_ID
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-PREM-002]   # required; FK
+    oracle_table: TGT_PREMISE
+    oracle_column: ENERGY_ACCOUNT_ID
+    merge_key: N
+
+  - source_view: ADDRESS_LINE1
+    source_table: SERVICE.PREMISE.ADDRESS_LINE1
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-PREM-003]
+    oracle_table: TGT_PREMISE
+    oracle_column: ADDRESS_LINE1
+    merge_key: N
+
+  - source_view: ADDRESS_LINE2
+    source_table: SERVICE.PREMISE.ADDRESS_LINE2
+    java_type: String
+    transformation: DIRECT (nullable)
+    validation: []
+    oracle_table: TGT_PREMISE
+    oracle_column: ADDRESS_LINE2
+    merge_key: N
+
+  - source_view: CITY
+    source_table: SERVICE.PREMISE.CITY
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-PREM-003]
+    oracle_table: TGT_PREMISE
+    oracle_column: CITY
+    merge_key: N
+
+  - source_view: STATE_CODE
+    source_table: SERVICE.PREMISE.STATE_CODE
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-PREM-003]
+    oracle_table: TGT_PREMISE
+    oracle_column: STATE_CODE
+    merge_key: N
+
+  - source_view: ZIP_CODE
+    source_table: SERVICE.PREMISE.ZIP_CODE
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-PREM-003]
+    oracle_table: TGT_PREMISE
+    oracle_column: ZIP_CODE
+    merge_key: N
+
+  - source_view: COUNTY
+    source_table: SERVICE.PREMISE.COUNTY
+    java_type: String
+    transformation: DIRECT (nullable)
+    validation: []
+    oracle_table: TGT_PREMISE
+    oracle_column: COUNTY
+    merge_key: N
+
+  - source_view: GEO_LATITUDE
+    source_table: SERVICE.PREMISE.GEO_LATITUDE
+    java_type: BigDecimal
+    transformation: "NUMBER(10,6) → BigDecimal (nullable)"
+    validation: []
+    oracle_table: TGT_PREMISE
+    oracle_column: GEO_LATITUDE
+    merge_key: N
+
+  - source_view: GEO_LONGITUDE
+    source_table: SERVICE.PREMISE.GEO_LONGITUDE
+    java_type: BigDecimal
+    transformation: "NUMBER(11,6) → BigDecimal (nullable)"
+    validation: []
+    oracle_table: TGT_PREMISE
+    oracle_column: GEO_LONGITUDE
+    merge_key: N
+
+  - source_view: PREMISE_TYPE
+    source_table: SERVICE.PREMISE.PREMISE_TYPE
+    java_type: String
+    transformation: DIRECT (nullable)
+    validation: []
+    oracle_table: TGT_PREMISE
+    oracle_column: PREMISE_TYPE
+    merge_key: N
+
+  - source_view: FULL_ADDRESS
+    source_table: "(derived in view)"
+    java_type: String
+    transformation: >
+      TR-COMB-02: TRIM(ADDRESS_LINE1 || COALESCE(', '||ADDRESS_LINE2,'') || ', ' || CITY || ', ' || STATE_CODE || ' ' || ZIP_CODE)
+      Computed by view; passed through as-is.
+    validation: []
+    oracle_table: TGT_PREMISE
+    oracle_column: FULL_ADDRESS
+    merge_key: N
+
+  - source_view: "(from source table — not in view main SELECT)"
+    source_table: SERVICE.PREMISE.EFFECTIVE_DATE
+    java_type: LocalDate
+    transformation: DIRECT
+    validation: []
+    oracle_table: TGT_PREMISE
+    oracle_column: EFFECTIVE_DATE
+    merge_key: N
+    notes: Carried through CustomerAccountRecord from CTE current_premise.
+
+  - source_view: "(from source table — not in view main SELECT)"
+    source_table: SERVICE.PREMISE.END_DATE
+    java_type: LocalDate
+    transformation: DIRECT (nullable)
+    validation: []
+    oracle_table: TGT_PREMISE
+    oracle_column: END_DATE
+    merge_key: N
+
+# ============================================================================
+# ENTITY: Meter  (VW_DAILY_CUSTOMER_ACCOUNT_EXPORT → TGT_METER)
+# ============================================================================
+meter_mappings:
+
+  - source_view: METER_ID
+    source_table: SERVICE.METER.METER_ID
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-MTR-001]    # required
+    oracle_table: TGT_METER
+    oracle_column: METER_ID
+    merge_key: Y
+
+  - source_view: PREMISE_ID
+    source_table: "(resolved via current_premise CTE)"
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-MTR-002]    # required; FK
+    oracle_table: TGT_METER
+    oracle_column: PREMISE_ID
+    merge_key: N
+
+  - source_view: METER_NUMBER
+    source_table: SERVICE.METER.METER_NUMBER
+    java_type: String
+    transformation: DIRECT
+    validation: []
+    oracle_table: TGT_METER
+    oracle_column: METER_NUMBER
+    merge_key: N
+
+  - source_view: METER_TYPE
+    source_table: SERVICE.METER.METER_TYPE
+    java_type: String
+    transformation: DIRECT
+    validation: []
+    oracle_table: TGT_METER
+    oracle_column: METER_TYPE
+    merge_key: N
+    notes: Default 'ANALOG'.
+
+  - source_view: INSTALL_DATE
+    source_table: SERVICE.METER.INSTALL_DATE
+    java_type: LocalDate
+    transformation: "DATE → java.sql.Date"
+    validation: []
+    oracle_table: TGT_METER
+    oracle_column: INSTALL_DATE
+    merge_key: N
+
+  - source_view: "(N/A — not exposed by export view)"
+    source_table: SERVICE.METER.MANUFACTURER
+    java_type: String
+    transformation: NOT MAPPED — not in export view
+    validation: []
+    oracle_table: TGT_METER
+    oracle_column: MANUFACTURER
+    merge_key: N
+    notes: Column exists in TGT_METER DDL but source is not exposed in VW_DAILY_CUSTOMER_ACCOUNT_EXPORT. Loaded as NULL.
+
+  - source_view: "(N/A — not exposed by export view)"
+    source_table: SERVICE.METER.MODEL
+    java_type: String
+    transformation: NOT MAPPED — not in export view
+    validation: []
+    oracle_table: TGT_METER
+    oracle_column: MODEL
+    merge_key: N
+    notes: Column exists in TGT_METER DDL but source is not exposed in export view. Loaded as NULL.
+
+  - source_view: "(N/A — not exposed by export view)"
+    source_table: SERVICE.METER.REMOVAL_DATE
+    java_type: LocalDate
+    transformation: NOT MAPPED — not in export view
+    validation: []
+    oracle_table: TGT_METER
+    oracle_column: REMOVAL_DATE
+    merge_key: N
+    notes: Column exists in TGT_METER DDL but export view filters IS_ACTIVE=TRUE / REMOVAL_DATE future. Loaded as NULL.
+
+# ============================================================================
+# ENTITY: MonthlyUsage  (VW_MONTHLY_USAGE_BILLING_EXPORT → TGT_MONTHLY_USAGE)
+# ============================================================================
+monthly_usage_mappings:
+
+  - source_view: USAGE_ID
+    source_table: BILLING.MONTHLY_USAGE.USAGE_ID
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-USG-001]    # required; not blank
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: USAGE_ID
+    merge_key: Y
+
+  - source_view: ENERGY_ACCOUNT_ID
+    source_table: BILLING.MONTHLY_USAGE.ENERGY_ACCOUNT_ID
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-USG-002]    # required; FK
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: ENERGY_ACCOUNT_ID
+    merge_key: N
+
+  - source_view: PREMISE_ID
+    source_table: BILLING.MONTHLY_USAGE.PREMISE_ID
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-USG-003]    # required
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: PREMISE_ID
+    merge_key: N
+
+  - source_view: METER_ID
+    source_table: BILLING.MONTHLY_USAGE.METER_ID
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-USG-004]    # required
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: METER_ID
+    merge_key: N
+
+  - source_view: BILLING_MONTH
+    source_table: BILLING.MONTHLY_USAGE.BILLING_MONTH
+    java_type: String
+    transformation: DIRECT (VARCHAR YYYY-MM)
+    validation: [VR-USG-005]    # required; format YYYY-MM
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: BILLING_MONTH
+    merge_key: N
+
+  - source_view: BILL_START_DATE
+    source_table: BILLING.MONTHLY_USAGE.BILL_START_DATE
+    java_type: LocalDate
+    transformation: "DATE → java.sql.Date"
+    validation: [VR-USG-006]    # required; must precede BILL_END_DATE
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: BILL_START_DATE
+    merge_key: N
+
+  - source_view: BILL_END_DATE
+    source_table: BILLING.MONTHLY_USAGE.BILL_END_DATE
+    java_type: LocalDate
+    transformation: "DATE → java.sql.Date"
+    validation: [VR-USG-006]    # required; must be >= BILL_START_DATE
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: BILL_END_DATE
+    merge_key: N
+
+  - source_view: BILLING_DAYS
+    source_table: BILLING.MONTHLY_USAGE.BILLING_DAYS
+    java_type: int
+    transformation: DIRECT
+    validation: [VR-USG-007]    # required; >= 1
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: BILLING_DAYS
+    merge_key: N
+
+  - source_view: KWH_USAGE
+    source_table: BILLING.MONTHLY_USAGE.KWH_USAGE
+    java_type: BigDecimal
+    transformation: "NUMBER(12,3) → BigDecimal(12,3)"
+    validation: [VR-USG-008]    # required; >= 0  (negative = intentional reject USG-INVK-*)
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: KWH_USAGE
+    merge_key: N
+
+  - source_view: KWH_EFFECTIVE
+    source_table: "(derived in view: COALESCE(KWH_ADJUSTED, KWH_USAGE))"
+    java_type: BigDecimal
+    transformation: "Computed by view — pass through as BigDecimal"
+    validation: []
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: KWH_EFFECTIVE
+    merge_key: N
+    notes: View column alias KWH_EFFECTIVE.
+
+  - source_view: PEAK_DEMAND_KW
+    source_table: BILLING.MONTHLY_USAGE.PEAK_DEMAND_KW
+    java_type: BigDecimal
+    transformation: "NUMBER(10,3) → BigDecimal (nullable)"
+    validation: [VR-USG-009]    # if present, must be >= 0
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: PEAK_DEMAND_KW
+    merge_key: N
+
+  - source_view: PREV_METER_READING
+    source_table: BILLING.MONTHLY_USAGE.PREV_METER_READING
+    java_type: BigDecimal
+    transformation: "NUMBER(12,3) → BigDecimal (nullable)"
+    validation: []
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: PREV_METER_READING
+    merge_key: N
+
+  - source_view: CURR_METER_READING
+    source_table: BILLING.MONTHLY_USAGE.CURR_METER_READING
+    java_type: BigDecimal
+    transformation: "NUMBER(12,3) → BigDecimal (nullable)"
+    validation: []
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: CURR_METER_READING
+    merge_key: N
+
+  - source_view: READ_TYPE
+    source_table: BILLING.MONTHLY_USAGE.READ_TYPE
+    java_type: String
+    transformation: DIRECT
+    validation: []
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: READ_TYPE
+    merge_key: N
+    notes: Default 'ACTUAL'. Values: ACTUAL / ESTIMATED.
+
+  - source_view: RATE_PLAN
+    source_table: BILLING.MONTHLY_USAGE.RATE_PLAN
+    java_type: String
+    transformation: DIRECT
+    validation: [VR-USG-010]    # required; must be a known DOMAIN=RATE_PLAN code
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: RATE_PLAN
+    merge_key: N
+
+  - source_view: FIXED_RATE
+    source_table: "REF.CODE_VALUE.ATTRIBUTES['fixed'] (resolved in view)"
+    java_type: BigDecimal
+    transformation: >
+      TR-BILL-02: TRY_TO_DECIMAL(ATTRIBUTES['fixed']::STRING, 10, 2) in view.
+      NULL if rate key absent or ATTRIBUTES null.
+      Java: if null → reject record (VR-RATE-001).
+    validation: [VR-RATE-001]   # reject if null (missing rate)
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: FIXED_CHARGE
+    merge_key: N
+    notes: View exposes raw rate; Java maps it to charge column. COALESCE(CALC_FIXED_CHARGE, 0) used as fallback if processor accepts nulls.
+
+  - source_view: CALC_FIXED_CHARGE
+    source_table: "(computed in view: = FIXED_RATE)"
+    java_type: BigDecimal
+    transformation: "TR-BILL-02: FIXED_RATE passed through as CALC_FIXED_CHARGE"
+    validation: [VR-RATE-001]
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: FIXED_CHARGE
+    merge_key: N
+
+  - source_view: CALC_ENERGY_CHARGE
+    source_table: "(computed in view)"
+    java_type: BigDecimal
+    transformation: "TR-BILL-03: ROUND(KWH_USAGE × ENERGY_RATE_PER_KWH, 2). NULL if rate null."
+    validation: [VR-RATE-001]
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: ENERGY_CHARGE
+    merge_key: N
+
+  - source_view: CALC_DEMAND_CHARGE
+    source_table: "(computed in view)"
+    java_type: BigDecimal
+    transformation: >
+      TR-BILL-04 / ICA MU-AC-09:
+      0 when DEMAND_RATE_PER_KW is NULL (no demand component for plan).
+      ROUND(PEAK_DEMAND_KW × DEMAND_RATE_PER_KW, 2) when both non-null.
+    validation: []
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: DEMAND_CHARGE
+    merge_key: N
+
+  - source_view: CALC_SUBTOTAL
+    source_table: "(computed in view)"
+    java_type: BigDecimal
+    transformation: "TR-BILL-05: FIXED + ENERGY + DEMAND. NULL if FIXED or ENERGY is NULL."
+    validation: [VR-RATE-001]
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: SUBTOTAL_CHARGE
+    merge_key: N
+
+  - source_view: CALC_TAX_AMOUNT
+    source_table: "(computed in view)"
+    java_type: BigDecimal
+    transformation: "TR-BILL-06: ROUND(SUBTOTAL × TAX_RATE, 2). NULL if TAX_RATE or SUBTOTAL null."
+    validation: [VR-RATE-001]
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: TAX_AMOUNT
+    merge_key: N
+
+  - source_view: CALC_TOTAL_BILLED
+    source_table: "(computed in view)"
+    java_type: BigDecimal
+    transformation: "TR-BILL-07: SUBTOTAL + TAX. NULL if either is null."
+    validation: [VR-RATE-001, VR-USG-011]    # VR-USG-011: total >= 0
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: TOTAL_BILLED
+    merge_key: N
+
+  - source_view: USAGE_QUALITY_STATUS
+    source_table: "(derived in view)"
+    java_type: String
+    transformation: >
+      CASE WHEN READ_TYPE='ESTIMATED' THEN 'ESTIMATED'
+           WHEN IS_CORRECTION=TRUE    THEN 'CORRECTED'
+           ELSE 'ACTUAL' END
+    validation: [VR-USG-012]    # must be ACTUAL|ESTIMATED|CORRECTED
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: USAGE_QUALITY_STATUS
+    merge_key: N
+
+  - source_view: IS_CORRECTION
+    source_table: BILLING.MONTHLY_USAGE.IS_CORRECTION
+    java_type: boolean
+    transformation: "BOOLEAN → NUMBER(1,0): true→1, false→0"
+    validation: []
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: IS_CORRECTION
+    merge_key: N
+
+  - source_view: CORRECTION_REASON
+    source_table: BILLING.MONTHLY_USAGE.CORRECTION_REASON
+    java_type: String
+    transformation: DIRECT (nullable)
+    validation: []
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: CORRECTION_REASON
+    merge_key: N
+
+  - source_view: UPDATED_AT
+    source_table: BILLING.MONTHLY_USAGE.UPDATED_AT
+    java_type: OffsetDateTime
+    transformation: "TIMESTAMP_TZ → java.sql.Timestamp (UTC)"
+    validation: []
+    oracle_table: TGT_MONTHLY_USAGE
+    oracle_column: SOURCE_UPDATED_AT
+    merge_key: N
+    notes: Used as watermark for MONTHLY_USAGE_EXPORT.
+
+# ============================================================================
+# NOT-MAPPED COLUMNS (present in Oracle DDL but never populated from Snowflake)
+# ============================================================================
+not_mapped:
+  - oracle_table: TGT_METER
+    oracle_column: MANUFACTURER
+    reason: "Not exposed in VW_DAILY_CUSTOMER_ACCOUNT_EXPORT (active_meter CTE)"
+    loaded_as: NULL
+  - oracle_table: TGT_METER
+    oracle_column: MODEL
+    reason: "Not exposed in VW_DAILY_CUSTOMER_ACCOUNT_EXPORT"
+    loaded_as: NULL
+  - oracle_table: TGT_METER
+    oracle_column: REMOVAL_DATE
+    reason: "Export view filters IS_ACTIVE=TRUE meters; REMOVAL_DATE not in active_meter CTE"
+    loaded_as: NULL
+  - oracle_table: TGT_CUSTOMER
+    oracle_column: ETL_LOAD_TS
+    reason: "Oracle DEFAULT SYS_EXTRACT_UTC(SYSTIMESTAMP) — set automatically on INSERT"
+    loaded_as: "Oracle DEFAULT (not set by application)"

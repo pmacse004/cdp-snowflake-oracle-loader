@@ -1,0 +1,132 @@
+# =============================================================================
+# business-glossary.yaml — ICA-01
+# CDP Snowflake-to-Oracle Loader
+# =============================================================================
+ica_document: "ICA-01"
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+
+terms:
+  - term: "Customer"
+    id: "GL-01"
+    definition: >
+      A utility customer identified by CUSTOMER_ID (e.g. CUST-000001).
+      A customer may have zero or more energy accounts. Customer records
+      without energy accounts still load into TGT_CUSTOMER.
+    source_table: "CUSTOMER.CUSTOMER"
+    target_table: "TGT_CUSTOMER"
+    business_key: "CUSTOMER_ID"
+
+  - term: "Energy Account"
+    id: "GL-02"
+    definition: >
+      A utility service account identified by ENERGY_ACCOUNT_ID (e.g. EA-000001).
+      Belongs to exactly one customer. Has at most one active billing account,
+      one current premise and one active meter at any point in time.
+    source_table: "CUSTOMER.ENERGY_ACCOUNT"
+    target_table: "TGT_ENERGY_ACCOUNT"
+    business_key: "ENERGY_ACCOUNT_ID"
+
+  - term: "Billing Account"
+    id: "GL-03"
+    definition: >
+      The current payment and billing configuration for an energy account.
+      Identified by BILLING_ACCOUNT_ID. Effective-dated; only the current
+      record (END_DATE IS NULL OR END_DATE >= CURRENT_DATE) is exported.
+    source_table: "CUSTOMER.BILLING_ACCOUNT"
+    target_table: "TGT_BILLING_ACCOUNT"
+    business_key: "BILLING_ACCOUNT_ID"
+
+  - term: "Premise"
+    id: "GL-04"
+    definition: >
+      The physical service address where electricity is delivered.
+      Identified by PREMISE_ID. One active premise per energy account.
+    source_table: "SERVICE.PREMISE"
+    target_table: "TGT_PREMISE"
+    business_key: "PREMISE_ID"
+
+  - term: "Meter"
+    id: "GL-05"
+    definition: >
+      The physical electricity meter installed at a premise.
+      Identified by METER_ID. One active meter per premise (IS_ACTIVE=TRUE,
+      REMOVAL_DATE IS NULL OR >= CURRENT_DATE).
+    source_table: "SERVICE.METER"
+    target_table: "TGT_METER"
+    business_key: "METER_ID"
+
+  - term: "Monthly Usage"
+    id: "GL-06"
+    definition: >
+      One row of electricity consumption and billing data per
+      (ENERGY_ACCOUNT_ID, BILLING_MONTH). Primary key: USAGE_ID.
+      Contains Snowflake-computed charge calculations.
+    source_table: "BILLING.MONTHLY_USAGE"
+    target_table: "TGT_MONTHLY_USAGE"
+    business_key: "USAGE_ID"
+    alternate_key: "(ENERGY_ACCOUNT_ID, BILLING_MONTH)"
+
+  - term: "Rate Plan"
+    id: "GL-07"
+    definition: >
+      A pricing plan code (e.g. RES-STD) with associated fixed, energy,
+      demand and tax rate parameters stored in REF.CODE_VALUE.ATTRIBUTES
+      (VARIANT column). CODE_LABEL is a human-readable label only — never JSON.
+    source_table: "REF.CODE_VALUE"
+    target_table: "N/A — used as lookup during Snowflake view computation"
+
+  - term: "RECORD_EFFECTIVE_TS"
+    id: "GL-08"
+    definition: >
+      Composite watermark column computed in Snowflake export views using
+      GREATEST(all contributing UPDATED_AT values, defaulting to 1970-01-01
+      for NULLs). Advances whenever any contributing source row changes.
+      Used as the primary incremental extraction cursor.
+    computed_by: "Snowflake export views"
+    type: "TIMESTAMP_TZ"
+
+  - term: "ETL Watermark"
+    id: "GL-09"
+    definition: >
+      A (JOB_TYPE, TABLE_NAME) keyed record in Oracle ETL_WATERMARK storing
+      the LAST_EXTRACTED_TS and LAST_MAX_SOURCE_ID from the last successfully
+      committed ETL run for that source dataset.
+    target_table: "ETL_WATERMARK"
+
+  - term: "ETL Job Run"
+    id: "GL-10"
+    definition: >
+      One execution of an ETL job, recorded in ETL_JOB_RUN with read/insert/
+      update/reject counts, status transitions (STARTED→COMPLETED/FAILED),
+      duration and watermark before/after values.
+    target_table: "ETL_JOB_RUN"
+
+  - term: "Intentional Invalid Record"
+    id: "GL-11"
+    definition: >
+      Demo records deliberately constructed to fail validation, used to
+      verify ETL_RECORD_ERROR insertion. Two patterns:
+      USG-INVK-* (negative PEAK_DEMAND_KW — violates VR-USAGE-006) and
+      USG-INVD-* (BILL_END_DATE before BILL_START_DATE — violates VR-USAGE-003).
+
+  - term: "Billing Month"
+    id: "GL-12"
+    definition: >
+      A VARCHAR(7) value in YYYY-MM format identifying the calendar month
+      for a monthly usage record. Part of the business key for TGT_MONTHLY_USAGE.
+
+  - term: "IS_ACTIVE"
+    id: "GL-13"
+    definition: >
+      Oracle NUMBER(1,0) flag. Value 1 = active/enabled, 0 = inactive/soft-deleted.
+      Derived from source ACCOUNT_STATUS: INACTIVE → 0, all others → 1.
+      Oracle CHECK constraint: IN (0,1).
+
+  - term: "Full Name Normalized"
+    id: "GL-14"
+    definition: >
+      Derived column FULL_NAME_NORMALIZED computed in the Snowflake export view:
+      TRIM(UPPER(FIRST_NAME) || ' ' || COALESCE(UPPER(MIDDLE_NAME) || ' ', '') ||
+      UPPER(LAST_NAME)). Stored in TGT_CUSTOMER.FULL_NAME_NORMALIZED.
+    transform_rule: "TR-COMB-01"

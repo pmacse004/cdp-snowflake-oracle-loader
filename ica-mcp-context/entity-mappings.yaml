@@ -1,0 +1,165 @@
+# =============================================================================
+# ICA/MCP Context — Entity Mappings
+# =============================================================================
+# Describes the logical entity-to-table mapping between the Snowflake source
+# schema and the Oracle target schema.
+#
+# Authority: infra/snowflake/03-create-source-tables.sql (source)
+#            cdp-loader-batch/src/main/resources/db/migration/V004__create_target_business_tables.sql (target)
+#
+# Vendor-neutral — no tenant-specific identifiers.
+# =============================================================================
+
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+artifact: entity-mappings
+
+entities:
+
+  - id: ENTITY-CUST
+    name: Customer
+    description: >
+      A utility customer. May be RESIDENTIAL, COMMERCIAL, or INDUSTRIAL.
+      Customers can exist without energy accounts.
+    source:
+      database: CDP_UTIL_DB
+      schema: CUSTOMER
+      table: CUSTOMER
+      grain: one row per CUSTOMER_ID
+    export_view: STAGING.VW_DAILY_CUSTOMER_EXPORT
+    target:
+      schema: CDP_LOADER   # Oracle schema (application user)
+      table: TGT_CUSTOMER
+      grain: one row per CUSTOMER_ID
+    business_key: [CUSTOMER_ID]
+    load_order: 1           # Parent — must load before all children
+    load_jobs: [INITIAL_LOAD_JOB, DAILY_INCREMENTAL_JOB]
+    watermark_source: RECORD_EFFECTIVE_TS   # composite: max(CUSTOMER.UPDATED_AT, EMAIL_UPDATED_AT, PHONE_UPDATED_AT)
+    watermark_record_key: CUSTOMER_EXPORT
+    soft_delete:
+      mechanism: IS_ACTIVE flag (NUMBER 0/1)
+      derive_from: ACCOUNT_STATUS = 'INACTIVE' → IS_ACTIVE = 0
+
+  - id: ENTITY-EA
+    name: EnergyAccount
+    description: >
+      A service / energy account belonging to a customer.
+      Multiple energy accounts per customer are permitted.
+      An energy account is the root entity for billing and usage.
+    source:
+      database: CDP_UTIL_DB
+      schema: CUSTOMER
+      table: ENERGY_ACCOUNT
+      grain: one row per ENERGY_ACCOUNT_ID
+    export_view: STAGING.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT
+    target:
+      schema: CDP_LOADER
+      table: TGT_ENERGY_ACCOUNT
+      grain: one row per ENERGY_ACCOUNT_ID
+    business_key: [ENERGY_ACCOUNT_ID]
+    load_order: 2           # Child of CUSTOMER; parent of BILLING_ACCOUNT, PREMISE, MONTHLY_USAGE
+    load_jobs: [INITIAL_LOAD_JOB, DAILY_INCREMENTAL_JOB]
+    depends_on: [ENTITY-CUST]
+    watermark_source: RECORD_EFFECTIVE_TS   # composite: max across all contributing tables
+    watermark_record_key: CUSTOMER_ACCOUNT_EXPORT
+
+  - id: ENTITY-BA
+    name: BillingAccount
+    description: >
+      Billing account linked to an energy account.
+      One current billing account per energy account at any time.
+      Historical rows have non-null END_DATE.
+    source:
+      database: CDP_UTIL_DB
+      schema: CUSTOMER
+      table: BILLING_ACCOUNT
+      grain: one row per BILLING_ACCOUNT_ID
+    export_view: STAGING.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT
+    target:
+      schema: CDP_LOADER
+      table: TGT_BILLING_ACCOUNT
+      grain: one row per BILLING_ACCOUNT_ID
+    business_key: [BILLING_ACCOUNT_ID]
+    load_order: 3
+    load_jobs: [INITIAL_LOAD_JOB, DAILY_INCREMENTAL_JOB]
+    depends_on: [ENTITY-EA]
+    watermark_source: RECORD_EFFECTIVE_TS   # same composite as parent view
+    watermark_record_key: CUSTOMER_ACCOUNT_EXPORT
+
+  - id: ENTITY-PREM
+    name: Premise
+    description: >
+      Physical service location (address) linked to an energy account.
+      One current premise per energy account; historical rows have END_DATE.
+    source:
+      database: CDP_UTIL_DB
+      schema: SERVICE
+      table: PREMISE
+      grain: one row per PREMISE_ID
+    export_view: STAGING.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT
+    target:
+      schema: CDP_LOADER
+      table: TGT_PREMISE
+      grain: one row per PREMISE_ID
+    business_key: [PREMISE_ID]
+    load_order: 4
+    load_jobs: [INITIAL_LOAD_JOB, DAILY_INCREMENTAL_JOB]
+    depends_on: [ENTITY-EA]
+    watermark_source: RECORD_EFFECTIVE_TS
+    watermark_record_key: CUSTOMER_ACCOUNT_EXPORT
+
+  - id: ENTITY-MTR
+    name: Meter
+    description: >
+      Physical electricity meter installed at a premise.
+      Active meter selected via IS_ACTIVE=TRUE and latest INSTALL_DATE.
+    source:
+      database: CDP_UTIL_DB
+      schema: SERVICE
+      table: METER
+      grain: one row per METER_ID
+    export_view: STAGING.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT
+    target:
+      schema: CDP_LOADER
+      table: TGT_METER
+      grain: one row per METER_ID
+    business_key: [METER_ID]
+    load_order: 5           # Child of PREMISE
+    load_jobs: [INITIAL_LOAD_JOB, DAILY_INCREMENTAL_JOB]
+    depends_on: [ENTITY-PREM]
+    watermark_source: RECORD_EFFECTIVE_TS
+    watermark_record_key: CUSTOMER_ACCOUNT_EXPORT
+    notes:
+      - MANUFACTURER and MODEL are in source METER table but not exposed by export view — mapped as N/A
+      - REMOVAL_DATE is in source METER table but not exposed by export view — mapped as N/A
+
+  - id: ENTITY-USG
+    name: MonthlyUsage
+    description: >
+      Monthly electricity consumption and billing record.
+      Business key: (ENERGY_ACCOUNT_ID, BILLING_MONTH) — unique per account per month.
+      Intentional invalid rows (USG-INVK-*, USG-INVD-*) must be rejected to ETL_RECORD_ERROR.
+    source:
+      database: CDP_UTIL_DB
+      schema: BILLING
+      table: MONTHLY_USAGE
+      grain: one row per USAGE_ID / (ENERGY_ACCOUNT_ID, BILLING_MONTH)
+    export_view: STAGING.VW_MONTHLY_USAGE_BILLING_EXPORT
+    target:
+      schema: CDP_LOADER
+      table: TGT_MONTHLY_USAGE
+      grain: one row per USAGE_ID
+    business_key: [USAGE_ID]
+    alternate_key: [ENERGY_ACCOUNT_ID, BILLING_MONTH]
+    load_order: 6           # Child of ENERGY_ACCOUNT; loaded last
+    load_jobs: [INITIAL_LOAD_JOB, MONTHLY_USAGE_JOB]
+    depends_on: [ENTITY-EA]
+    watermark_source: UPDATED_AT   # direct column on BILLING.MONTHLY_USAGE
+    watermark_record_key: MONTHLY_USAGE_EXPORT
+    intentional_rejects:
+      - pattern: "USAGE_ID LIKE 'USG-INVK-%'"
+        reason: Invalid KWH (negative KWH_USAGE)
+        error_code: VAL_USAGE_NEGATIVE_KWH
+      - pattern: "USAGE_ID LIKE 'USG-INVD-%'"
+        reason: Invalid billing date range (BILL_END_DATE < BILL_START_DATE)
+        error_code: VAL_USAGE_DATE_RANGE

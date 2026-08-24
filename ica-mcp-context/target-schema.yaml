@@ -1,0 +1,236 @@
+# =============================================================================
+# target-schema.yaml — ICA-03
+# Oracle target tables, columns, Oracle types, constraints and MERGE keys
+# Database: Oracle 23ai Free — FREEPDB1 — Schema: CDP_LOADER
+# =============================================================================
+ica_document: "ICA-03"
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+platform: "Oracle 23ai Free"
+connection: "jdbc:oracle:thin:@//localhost:1521/FREEPDB1"
+schema: "CDP_LOADER"
+flyway_baseline: "V001-V004 applied"
+
+business_tables:
+  - name: "TGT_CUSTOMER"
+    description: "Customer master — loaded from VW_DAILY_CUSTOMER_EXPORT"
+    source_view: "STAGING.VW_DAILY_CUSTOMER_EXPORT"
+    merge_key: ["CUSTOMER_ID"]
+    columns:
+      - {name: "CUSTOMER_ID",          type: "VARCHAR2(20)",  nullable: false, pk: true,    source: "CUSTOMER_ID"}
+      - {name: "FIRST_NAME",           type: "VARCHAR2(100)", nullable: false,             source: "FIRST_NAME"}
+      - {name: "LAST_NAME",            type: "VARCHAR2(100)", nullable: false,             source: "LAST_NAME"}
+      - {name: "MIDDLE_NAME",          type: "VARCHAR2(100)", nullable: true,              source: "MIDDLE_NAME"}
+      - {name: "NAME_SUFFIX",          type: "VARCHAR2(20)",  nullable: true,              source: "NAME_SUFFIX"}
+      - {name: "FULL_NAME_NORMALIZED", type: "VARCHAR2(300)", nullable: false,             source: "FULL_NAME_NORMALIZED (view-computed TR-COMB-01)"}
+      - {name: "CUSTOMER_TYPE",        type: "VARCHAR2(30)",  nullable: false,             source: "CUSTOMER_TYPE"}
+      - {name: "CUSTOMER_TYPE_LABEL",  type: "VARCHAR2(100)", nullable: true,              source: "CUST_TYPE_LABEL"}
+      - {name: "PREFERRED_LANGUAGE",   type: "VARCHAR2(10)",  nullable: false, default: "'EN'", source: "PREFERRED_LANGUAGE"}
+      - {name: "ACCOUNT_STATUS",       type: "VARCHAR2(30)",  nullable: false,             source: "CUSTOMER_STATUS"}
+      - {name: "ACCOUNT_STATUS_LABEL", type: "VARCHAR2(100)", nullable: true,              source: "ACCT_STATUS_LABEL"}
+      - {name: "IS_ACTIVE",            type: "NUMBER(1,0)",   nullable: false, check: "IN(0,1)", source: "IS_INACTIVE → 0 when TRUE else 1 (TR-01)"}
+      - {name: "SOURCE_UPDATED_AT",    type: "TIMESTAMP",     nullable: true,              source: "UPDATED_AT"}
+      - {name: "ETL_RUN_ID",           type: "NUMBER(19,0)",  nullable: false,             source: "SYSTEM — current ETL_JOB_RUN.RUN_ID"}
+      - {name: "ETL_LOAD_TS",          type: "TIMESTAMP",     nullable: false, default: "SYS_EXTRACT_UTC(SYSTIMESTAMP)", source: "SYSTEM"}
+      - {name: "CREATED_AT",           type: "TIMESTAMP",     nullable: false, default: "SYS_EXTRACT_UTC(SYSTIMESTAMP)", source: "SYSTEM — INSERT only, preserved on update"}
+      - {name: "UPDATED_AT",           type: "TIMESTAMP",     nullable: false, default: "SYS_EXTRACT_UTC(SYSTIMESTAMP)", source: "SYSTEM — set on every UPDATE"}
+    indexes:
+      - {name: "idx_tgt_cust_status",  columns: ["ACCOUNT_STATUS"]}
+      - {name: "idx_tgt_cust_type",    columns: ["CUSTOMER_TYPE"]}
+      - {name: "idx_tgt_cust_name",    columns: ["LAST_NAME","FIRST_NAME"]}
+      - {name: "idx_tgt_cust_updated", columns: ["SOURCE_UPDATED_AT"]}
+
+  - name: "TGT_ENERGY_ACCOUNT"
+    description: "Energy accounts — loaded from VW_DAILY_CUSTOMER_ACCOUNT_EXPORT"
+    source_view: "STAGING.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT"
+    merge_key: ["ENERGY_ACCOUNT_ID"]
+    columns:
+      - {name: "ENERGY_ACCOUNT_ID", type: "VARCHAR2(20)", nullable: false, pk: true,  source: "ENERGY_ACCOUNT_ID"}
+      - {name: "CUSTOMER_ID",       type: "VARCHAR2(20)", nullable: false, fk: "TGT_CUSTOMER", source: "CUSTOMER_ID"}
+      - {name: "ACCOUNT_NUMBER",    type: "VARCHAR2(30)", nullable: false, unique: true, source: "ACCOUNT_NUMBER"}
+      - {name: "ACCOUNT_STATUS",    type: "VARCHAR2(30)", nullable: false,              source: "ACCOUNT_STATUS"}
+      - {name: "SERVICE_TYPE",      type: "VARCHAR2(30)", nullable: false, default: "'ELECTRIC'", source: "SERVICE_TYPE"}
+      - {name: "RATE_CLASS",        type: "VARCHAR2(30)", nullable: false,              source: "RATE_CLASS"}
+      - {name: "OPEN_DATE",         type: "DATE",         nullable: false,              source: "OPEN_DATE"}
+      - {name: "CLOSE_DATE",        type: "DATE",         nullable: true,               source: "CLOSE_DATE"}
+      - {name: "IS_ACTIVE",         type: "NUMBER(1,0)",  nullable: false, check: "IN(0,1)", source: "ACCOUNT_STATUS='ACTIVE'→1 else 0"}
+      - {name: "SOURCE_UPDATED_AT", type: "TIMESTAMP",    nullable: true,               source: "RECORD_EFFECTIVE_TS"}
+      - {name: "ETL_RUN_ID",        type: "NUMBER(19,0)", nullable: false,              source: "SYSTEM"}
+      - {name: "ETL_LOAD_TS",       type: "TIMESTAMP",    nullable: false, default: "SYS_EXTRACT_UTC(SYSTIMESTAMP)", source: "SYSTEM"}
+      - {name: "CREATED_AT",        type: "TIMESTAMP",    nullable: false, default: "SYS_EXTRACT_UTC(SYSTIMESTAMP)", source: "SYSTEM — preserved on update"}
+      - {name: "UPDATED_AT",        type: "TIMESTAMP",    nullable: false, default: "SYS_EXTRACT_UTC(SYSTIMESTAMP)", source: "SYSTEM"}
+
+  - name: "TGT_BILLING_ACCOUNT"
+    description: "Billing accounts — loaded from VW_DAILY_CUSTOMER_ACCOUNT_EXPORT"
+    source_view: "STAGING.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT"
+    merge_key: ["BILLING_ACCOUNT_ID"]
+    columns:
+      - {name: "BILLING_ACCOUNT_ID",  type: "VARCHAR2(20)", nullable: false, pk: true,  source: "BILLING_ACCOUNT_ID (NULL rows skipped)"}
+      - {name: "ENERGY_ACCOUNT_ID",   type: "VARCHAR2(20)", nullable: false, fk: "TGT_ENERGY_ACCOUNT", source: "ENERGY_ACCOUNT_ID"}
+      - {name: "BILLING_ACCOUNT_NBR", type: "VARCHAR2(30)", nullable: false,             source: "BILLING_ACCOUNT_NBR"}
+      - {name: "BILLING_CYCLE",       type: "VARCHAR2(10)", nullable: false,             source: "BILLING_CYCLE"}
+      - {name: "PAYMENT_METHOD",      type: "VARCHAR2(30)", nullable: false, default: "'PAPER_BILL'", source: "PAYMENT_METHOD"}
+      - {name: "AUTO_PAY_ENROLLED",   type: "NUMBER(1,0)",  nullable: false, check: "IN(0,1)", source: "AUTO_PAY_ENROLLED Boolean→0/1 (TR-01)"}
+      - {name: "PAPERLESS_ENROLLED",  type: "NUMBER(1,0)",  nullable: false, check: "IN(0,1)", source: "PAPERLESS_ENROLLED Boolean→0/1 (TR-01)"}
+      - {name: "EFFECTIVE_DATE",      type: "DATE",         nullable: false, default: "SYSDATE", source: "SYSTEM — set on INSERT only"}
+      - {name: "END_DATE",            type: "DATE",         nullable: true,              source: "N/A — not in export view"}
+      - {name: "IS_CURRENT",          type: "NUMBER(1,0)",  nullable: false, check: "IN(0,1)", source: "SYSTEM — always 1 for current record"}
+      - {name: "SOURCE_UPDATED_AT",   type: "TIMESTAMP",    nullable: true,              source: "RECORD_EFFECTIVE_TS"}
+      - {name: "ETL_RUN_ID",          type: "NUMBER(19,0)", nullable: false,             source: "SYSTEM"}
+      - {name: "ETL_LOAD_TS",         type: "TIMESTAMP",    nullable: false,             source: "SYSTEM"}
+      - {name: "CREATED_AT",          type: "TIMESTAMP",    nullable: false,             source: "SYSTEM — preserved on update"}
+      - {name: "UPDATED_AT",          type: "TIMESTAMP",    nullable: false,             source: "SYSTEM"}
+
+  - name: "TGT_PREMISE"
+    description: "Service premises — loaded from VW_DAILY_CUSTOMER_ACCOUNT_EXPORT"
+    source_view: "STAGING.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT"
+    merge_key: ["PREMISE_ID"]
+    columns:
+      - {name: "PREMISE_ID",        type: "VARCHAR2(20)",  nullable: false, pk: true,  source: "PREMISE_ID (NULL rows skipped)"}
+      - {name: "ENERGY_ACCOUNT_ID", type: "VARCHAR2(20)",  nullable: false, fk: "TGT_ENERGY_ACCOUNT", source: "ENERGY_ACCOUNT_ID"}
+      - {name: "ADDRESS_LINE1",     type: "VARCHAR2(200)", nullable: false,             source: "ADDRESS_LINE1"}
+      - {name: "ADDRESS_LINE2",     type: "VARCHAR2(200)", nullable: true,              source: "ADDRESS_LINE2"}
+      - {name: "CITY",              type: "VARCHAR2(100)", nullable: false,             source: "CITY"}
+      - {name: "STATE_CODE",        type: "VARCHAR2(2)",   nullable: false,             source: "STATE_CODE"}
+      - {name: "ZIP_CODE",          type: "VARCHAR2(10)",  nullable: false,             source: "ZIP_CODE"}
+      - {name: "COUNTY",            type: "VARCHAR2(100)", nullable: true,              source: "COUNTY"}
+      - {name: "GEO_LATITUDE",      type: "NUMBER(10,6)",  nullable: true,              source: "GEO_LATITUDE"}
+      - {name: "GEO_LONGITUDE",     type: "NUMBER(11,6)",  nullable: true,              source: "GEO_LONGITUDE"}
+      - {name: "PREMISE_TYPE",      type: "VARCHAR2(30)",  nullable: true,              source: "PREMISE_TYPE"}
+      - {name: "FULL_ADDRESS",      type: "VARCHAR2(600)", nullable: true,              source: "FULL_ADDRESS (view-computed TR-COMB-02)"}
+      - {name: "EFFECTIVE_DATE",    type: "DATE",          nullable: false, default: "SYSDATE", source: "SYSTEM"}
+      - {name: "END_DATE",          type: "DATE",          nullable: true,              source: "N/A"}
+      - {name: "IS_CURRENT",        type: "NUMBER(1,0)",   nullable: false, check: "IN(0,1)", source: "SYSTEM — 1"}
+      - {name: "SOURCE_UPDATED_AT", type: "TIMESTAMP",     nullable: true,              source: "RECORD_EFFECTIVE_TS"}
+      - {name: "ETL_RUN_ID",        type: "NUMBER(19,0)",  nullable: false,             source: "SYSTEM"}
+      - {name: "ETL_LOAD_TS",       type: "TIMESTAMP",     nullable: false,             source: "SYSTEM"}
+      - {name: "CREATED_AT",        type: "TIMESTAMP",     nullable: false,             source: "SYSTEM"}
+      - {name: "UPDATED_AT",        type: "TIMESTAMP",     nullable: false,             source: "SYSTEM"}
+
+  - name: "TGT_METER"
+    description: "Meters — loaded from VW_DAILY_CUSTOMER_ACCOUNT_EXPORT"
+    source_view: "STAGING.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT"
+    merge_key: ["METER_ID"]
+    columns:
+      - {name: "METER_ID",          type: "VARCHAR2(20)",  nullable: false, pk: true,  source: "METER_ID (NULL rows skipped)"}
+      - {name: "PREMISE_ID",        type: "VARCHAR2(20)",  nullable: false, fk: "TGT_PREMISE", source: "PREMISE_ID"}
+      - {name: "METER_NUMBER",      type: "VARCHAR2(30)",  nullable: false, unique: true, source: "METER_NUMBER"}
+      - {name: "METER_TYPE",        type: "VARCHAR2(30)",  nullable: false, default: "'ANALOG'", source: "METER_TYPE"}
+      - {name: "MANUFACTURER",      type: "VARCHAR2(100)", nullable: true,              source: "NOT IN EXPORT VIEW — N/A"}
+      - {name: "MODEL",             type: "VARCHAR2(100)", nullable: true,              source: "NOT IN EXPORT VIEW — N/A"}
+      - {name: "INSTALL_DATE",      type: "DATE",          nullable: false,             source: "INSTALL_DATE"}
+      - {name: "REMOVAL_DATE",      type: "DATE",          nullable: true,              source: "NOT IN EXPORT VIEW — N/A"}
+      - {name: "IS_ACTIVE",         type: "NUMBER(1,0)",   nullable: false, check: "IN(0,1)", source: "SYSTEM — always 1 (view filters IS_ACTIVE=TRUE)"}
+      - {name: "SOURCE_UPDATED_AT", type: "TIMESTAMP",     nullable: true,              source: "RECORD_EFFECTIVE_TS"}
+      - {name: "ETL_RUN_ID",        type: "NUMBER(19,0)",  nullable: false,             source: "SYSTEM"}
+      - {name: "ETL_LOAD_TS",       type: "TIMESTAMP",     nullable: false,             source: "SYSTEM"}
+      - {name: "CREATED_AT",        type: "TIMESTAMP",     nullable: false,             source: "SYSTEM"}
+      - {name: "UPDATED_AT",        type: "TIMESTAMP",     nullable: false,             source: "SYSTEM"}
+
+  - name: "TGT_MONTHLY_USAGE"
+    description: "Monthly electricity usage and billing — loaded from VW_MONTHLY_USAGE_BILLING_EXPORT"
+    source_view: "STAGING.VW_MONTHLY_USAGE_BILLING_EXPORT"
+    merge_key: ["USAGE_ID"]
+    alternate_key: ["ENERGY_ACCOUNT_ID", "BILLING_MONTH"]
+    columns:
+      - {name: "USAGE_ID",             type: "VARCHAR2(30)",  nullable: false, pk: true,    source: "USAGE_ID"}
+      - {name: "ENERGY_ACCOUNT_ID",    type: "VARCHAR2(20)",  nullable: false, fk: "TGT_ENERGY_ACCOUNT", source: "ENERGY_ACCOUNT_ID"}
+      - {name: "PREMISE_ID",           type: "VARCHAR2(20)",  nullable: false,              source: "PREMISE_ID"}
+      - {name: "METER_ID",             type: "VARCHAR2(20)",  nullable: false,              source: "METER_ID"}
+      - {name: "BILLING_MONTH",        type: "VARCHAR2(7)",   nullable: false,              source: "BILLING_MONTH"}
+      - {name: "BILL_START_DATE",      type: "DATE",          nullable: false,              source: "BILL_START_DATE"}
+      - {name: "BILL_END_DATE",        type: "DATE",          nullable: false,              source: "BILL_END_DATE"}
+      - {name: "BILLING_DAYS",         type: "NUMBER(3,0)",   nullable: false,              source: "BILLING_DAYS"}
+      - {name: "KWH_USAGE",            type: "NUMBER(12,3)",  nullable: false, check: ">= 0", source: "KWH_USAGE"}
+      - {name: "KWH_EFFECTIVE",        type: "NUMBER(12,3)",  nullable: false,              source: "KWH_EFFECTIVE = COALESCE(KWH_ADJUSTED, KWH_USAGE)"}
+      - {name: "PEAK_DEMAND_KW",       type: "NUMBER(10,3)",  nullable: true,  check: "IS NULL OR >= 0", source: "PEAK_DEMAND_KW"}
+      - {name: "PREV_METER_READING",   type: "NUMBER(12,3)",  nullable: true,              source: "PREV_METER_READING"}
+      - {name: "CURR_METER_READING",   type: "NUMBER(12,3)",  nullable: true,              source: "CURR_METER_READING"}
+      - {name: "READ_TYPE",            type: "VARCHAR2(10)",  nullable: false, default: "'ACTUAL'", source: "READ_TYPE"}
+      - {name: "RATE_PLAN",            type: "VARCHAR2(30)",  nullable: false,              source: "RATE_PLAN"}
+      - {name: "FIXED_CHARGE",         type: "NUMBER(10,2)",  nullable: false, default: "0", source: "CALC_FIXED_CHARGE (Snowflake computed; COALESCE to 0 on write)"}
+      - {name: "ENERGY_CHARGE",        type: "NUMBER(10,2)",  nullable: false, default: "0", source: "CALC_ENERGY_CHARGE"}
+      - {name: "DEMAND_CHARGE",        type: "NUMBER(10,2)",  nullable: false, default: "0", source: "CALC_DEMAND_CHARGE (0 when no demand rate — MU-AC-09)"}
+      - {name: "SUBTOTAL_CHARGE",      type: "NUMBER(10,2)",  nullable: false, default: "0", source: "CALC_SUBTOTAL"}
+      - {name: "TAX_AMOUNT",           type: "NUMBER(10,2)",  nullable: false, default: "0", source: "CALC_TAX_AMOUNT"}
+      - {name: "TOTAL_BILLED",         type: "NUMBER(10,2)",  nullable: false, default: "0", check: ">= 0", source: "CALC_TOTAL_BILLED"}
+      - {name: "USAGE_QUALITY_STATUS", type: "VARCHAR2(20)",  nullable: false, check: "IN('ACTUAL','ESTIMATED','CORRECTED')", source: "USAGE_QUALITY_STATUS (view-computed)"}
+      - {name: "IS_CORRECTION",        type: "NUMBER(1,0)",   nullable: false, check: "IN(0,1)", source: "IS_CORRECTION Boolean→0/1 (TR-01)"}
+      - {name: "CORRECTION_REASON",    type: "VARCHAR2(200)", nullable: true,              source: "CORRECTION_REASON"}
+      - {name: "SOURCE_UPDATED_AT",    type: "TIMESTAMP",     nullable: true,              source: "UPDATED_AT"}
+      - {name: "ETL_RUN_ID",           type: "NUMBER(19,0)",  nullable: false,             source: "SYSTEM"}
+      - {name: "ETL_LOAD_TS",          type: "TIMESTAMP",     nullable: false,             source: "SYSTEM"}
+      - {name: "CREATED_AT",           type: "TIMESTAMP",     nullable: false,             source: "SYSTEM — preserved on update"}
+      - {name: "UPDATED_AT",           type: "TIMESTAMP",     nullable: false,             source: "SYSTEM"}
+
+control_tables:
+  - name: "ETL_WATERMARK"
+    description: "Per-table incremental load watermarks"
+    columns:
+      - {name: "WATERMARK_ID",       type: "NUMBER(10,0)",  nullable: false, pk: true, note: "GENERATED ALWAYS AS IDENTITY"}
+      - {name: "JOB_TYPE",           type: "VARCHAR2(30)",  nullable: false, check: "IN('INITIAL','DAILY','MONTHLY')"}
+      - {name: "TABLE_NAME",         type: "VARCHAR2(100)", nullable: false, note: "Logical dataset key e.g. CUSTOMER_EXPORT"}
+      - {name: "LAST_EXTRACTED_TS",  type: "TIMESTAMP",     nullable: false, note: "UTC timestamp of last successfully committed record"}
+      - {name: "LAST_MAX_SOURCE_ID", type: "VARCHAR2(50)",  nullable: true,  note: "Stable source ID tie-break for equal timestamps"}
+      - {name: "LAST_RUN_ID",        type: "NUMBER(19,0)",  nullable: true}
+      - {name: "RECORD_COUNT",       type: "NUMBER(10,0)",  nullable: false, default: "0"}
+      - {name: "IS_ACTIVE",          type: "NUMBER(1,0)",   nullable: false, default: "1"}
+      - {name: "CREATED_AT",         type: "TIMESTAMP",     nullable: false}
+      - {name: "UPDATED_AT",         type: "TIMESTAMP",     nullable: false}
+    unique_key: ["JOB_TYPE", "TABLE_NAME"]
+
+  - name: "ETL_JOB_RUN"
+    description: "One row per ETL job execution"
+    columns:
+      - {name: "RUN_ID",           type: "NUMBER(19,0)",  nullable: false, pk: true, note: "GENERATED ALWAYS AS IDENTITY"}
+      - {name: "JOB_NAME",         type: "VARCHAR2(100)", nullable: false}
+      - {name: "JOB_TYPE",         type: "VARCHAR2(30)",  nullable: false, check: "IN('INITIAL','DAILY','MONTHLY')"}
+      - {name: "SPRING_EXEC_ID",   type: "NUMBER(19,0)",  nullable: true}
+      - {name: "STATUS",           type: "VARCHAR2(20)",  nullable: false, check: "IN('STARTED','COMPLETED','FAILED','STOPPED','ABANDONED')"}
+      - {name: "START_TIME",       type: "TIMESTAMP",     nullable: true}
+      - {name: "END_TIME",         type: "TIMESTAMP",     nullable: true}
+      - {name: "DURATION_SECONDS", type: "NUMBER(10,2)",  nullable: true}
+      - {name: "RECORDS_READ",     type: "NUMBER(10,0)",  nullable: false, default: "0"}
+      - {name: "RECORDS_INSERTED", type: "NUMBER(10,0)",  nullable: false, default: "0"}
+      - {name: "RECORDS_UPDATED",  type: "NUMBER(10,0)",  nullable: false, default: "0"}
+      - {name: "RECORDS_SKIPPED",  type: "NUMBER(10,0)",  nullable: false, default: "0"}
+      - {name: "RECORDS_REJECTED", type: "NUMBER(10,0)",  nullable: false, default: "0"}
+      - {name: "THROUGHPUT_RPS",   type: "NUMBER(10,2)",  nullable: true}
+      - {name: "WATERMARK_BEFORE", type: "VARCHAR2(50)",  nullable: true}
+      - {name: "WATERMARK_AFTER",  type: "VARCHAR2(50)",  nullable: true}
+      - {name: "ERROR_SUMMARY",    type: "VARCHAR2(500)", nullable: true}
+      - {name: "TRIGGERED_BY",     type: "VARCHAR2(100)", nullable: false, default: "'API'"}
+      - {name: "CREATED_AT",       type: "TIMESTAMP",     nullable: false}
+      - {name: "UPDATED_AT",       type: "TIMESTAMP",     nullable: false}
+
+  - name: "ETL_RECORD_ERROR"
+    description: "Rejected source records with error details"
+    columns:
+      - {name: "ERROR_ID",         type: "NUMBER(19,0)",  nullable: false, pk: true, note: "GENERATED ALWAYS AS IDENTITY"}
+      - {name: "RUN_ID",           type: "NUMBER(19,0)",  nullable: false, fk: "ETL_JOB_RUN"}
+      - {name: "JOB_NAME",         type: "VARCHAR2(100)", nullable: false}
+      - {name: "STEP_NAME",        type: "VARCHAR2(100)", nullable: false}
+      - {name: "SOURCE_ENTITY",    type: "VARCHAR2(100)", nullable: false}
+      - {name: "SOURCE_RECORD_ID", type: "VARCHAR2(100)", nullable: true}
+      - {name: "ERROR_CODE",       type: "VARCHAR2(50)",  nullable: false}
+      - {name: "ERROR_MESSAGE",    type: "VARCHAR2(1000)",nullable: false}
+      - {name: "PAYLOAD_EXCERPT",  type: "VARCHAR2(2000)",nullable: true,  note: "Safe excerpt only — NO credentials/PII"}
+      - {name: "ERROR_TIMESTAMP",  type: "TIMESTAMP",     nullable: false}
+      - {name: "IS_RETRYABLE",     type: "NUMBER(1,0)",   nullable: false, check: "IN(0,1)"}
+
+  - name: "ETL_RECONCILIATION"
+    description: "Source-to-target count and aggregate reconciliation"
+    columns:
+      - {name: "RECON_ID",      type: "NUMBER(19,0)",  nullable: false, pk: true}
+      - {name: "RUN_ID",        type: "NUMBER(19,0)",  nullable: false, fk: "ETL_JOB_RUN"}
+      - {name: "JOB_TYPE",      type: "VARCHAR2(30)",  nullable: false, check: "IN('INITIAL','DAILY','MONTHLY')"}
+      - {name: "ENTITY_NAME",   type: "VARCHAR2(100)", nullable: false}
+      - {name: "RECON_METRIC",  type: "VARCHAR2(100)", nullable: false, note: "e.g. COUNT, TOTAL_KWH, TOTAL_ENERGY_CHARGE"}
+      - {name: "SOURCE_VALUE",  type: "NUMBER(20,6)",  nullable: true}
+      - {name: "TARGET_VALUE",  type: "NUMBER(20,6)",  nullable: true}
+      - {name: "VARIANCE",      type: "NUMBER(20,6)",  nullable: true}
+      - {name: "VARIANCE_PCT",  type: "NUMBER(10,6)",  nullable: true}
+      - {name: "TOLERANCE_PCT", type: "NUMBER(10,6)",  nullable: true}
+      - {name: "STATUS",        type: "VARCHAR2(20)",  nullable: false, check: "IN('PASS','FAIL','WARNING')"}
+      - {name: "NOTES",         type: "VARCHAR2(500)", nullable: true}
+      - {name: "RECON_TIMESTAMP",type: "TIMESTAMP",    nullable: false}

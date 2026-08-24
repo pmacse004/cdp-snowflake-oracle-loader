@@ -1,0 +1,206 @@
+{
+  "$schema": "https://ibm.com/ica/context-bundle/v1/schema.json",
+  "meta": {
+    "format": "ICA Context Bundle",
+    "version": "1.0",
+    "project": "CDP Snowflake to Oracle Data Loader",
+    "description": "Complete ICA context artifact for the CDP ETL pipeline. Import this file into IBM ICA Context Studio to enable MCP-based retrieval of mapping rules, transformation rules, and validation logic during Bob-assisted code generation.",
+    "generated_from": [
+      "docs/ica-context/01-business-glossary.md",
+      "docs/ica-context/02-source-data-dictionary.md",
+      "docs/ica-context/03-target-data-dictionary.md",
+      "docs/ica-context/04-entity-level-mappings.md",
+      "docs/ica-context/05-column-level-mappings.md",
+      "docs/ica-context/06-transformation-rules.md",
+      "docs/ica-context/07-validation-rules.md",
+      "docs/ica-context/08-reference-code-translations.md",
+      "docs/ica-context/09-incremental-loading-watermark-rules.md",
+      "docs/ica-context/10-initial-load-rules.md",
+      "docs/ica-context/11-daily-load-rules.md",
+      "docs/ica-context/12-monthly-usage-rules.md",
+      "docs/ica-context/13-error-handling-rules.md",
+      "docs/ica-context/14-reconciliation-rules.md",
+      "docs/ica-context/15-security-sensitive-data.md",
+      "docs/ica-context/16-nonfunctional-scalability.md",
+      "docs/ica-context/17-snowflake-view-designs.md",
+      "docs/ica-context/mapping-catalogue.yaml"
+    ],
+    "runtime_note": "ICA/MCP is used ONLY during design and code generation. The running application has NO runtime ICA or MCP dependency.",
+    "created": "2025",
+    "schema_version": "1.0"
+  },
+  "context_nodes": [
+    {
+      "id": "ICA-01",
+      "type": "business_glossary",
+      "title": "Business Glossary",
+      "description": "Core business terms for the CDP ETL pipeline including Customer, Energy Account, Premise, Meter, Billing Account, Monthly Usage, Watermark, ETL Job Run.",
+      "terms": [
+        {"term": "Customer", "definition": "A utility customer identified by CUSTOMER_ID (e.g. CUST-000001). May have zero or more energy accounts."},
+        {"term": "Energy Account", "definition": "A utility service account identified by ENERGY_ACCOUNT_ID (e.g. EA-000001). Belongs to exactly one customer. Has one active billing account, premise, and meter at a time."},
+        {"term": "Premise", "definition": "The physical service address identified by PREMISE_ID (e.g. PREM-000001). One active premise per energy account at a time."},
+        {"term": "Meter", "definition": "The physical electricity meter identified by METER_ID (e.g. MTR-000001). One active meter per premise at a time."},
+        {"term": "Monthly Usage", "definition": "One row of electricity consumption and billing data per (ENERGY_ACCOUNT_ID, BILLING_MONTH). Primary key: USAGE_ID."},
+        {"term": "Watermark", "definition": "A timestamp + source ID pair stored in ETL_WATERMARK that marks the last successfully processed record for a given source dataset and job type."},
+        {"term": "ETL Job Run", "definition": "One execution of an ETL job, recorded in ETL_JOB_RUN with read/insert/update/reject counts, status, and watermark values."},
+        {"term": "RECORD_EFFECTIVE_TS", "definition": "Composite watermark column computed by GREATEST(all contributing UPDATED_AT values) in the Snowflake export view."},
+        {"term": "Rate Plan", "definition": "A pricing plan code (e.g. RES-STD) with associated fixed, energy, demand, and tax rate parameters stored in REF.CODE_VALUE.ATTRIBUTES."}
+      ]
+    },
+    {
+      "id": "ICA-02",
+      "type": "source_data_dictionary",
+      "title": "Source Data Dictionary (Snowflake)",
+      "description": "Snowflake source tables in CDP_UTIL_DB. Schemas: CUSTOMER, SERVICE, BILLING, REF.",
+      "source_system": "Snowflake CDP_UTIL_DB",
+      "tables": [
+        {"schema": "CUSTOMER", "table": "CUSTOMER", "pk": "CUSTOMER_ID", "type": "VARCHAR(20)", "watermark_col": "UPDATED_AT"},
+        {"schema": "CUSTOMER", "table": "CUSTOMER_CONTACT", "pk": "CONTACT_ID", "type": "VARCHAR(20)", "watermark_col": "UPDATED_AT"},
+        {"schema": "CUSTOMER", "table": "ENERGY_ACCOUNT", "pk": "ENERGY_ACCOUNT_ID", "type": "VARCHAR(20)", "watermark_col": "UPDATED_AT"},
+        {"schema": "CUSTOMER", "table": "BILLING_ACCOUNT", "pk": "BILLING_ACCOUNT_ID", "type": "VARCHAR(20)", "watermark_col": "UPDATED_AT"},
+        {"schema": "SERVICE", "table": "PREMISE", "pk": "PREMISE_ID", "type": "VARCHAR(20)", "watermark_col": "UPDATED_AT"},
+        {"schema": "SERVICE", "table": "METER", "pk": "METER_ID", "type": "VARCHAR(20)", "watermark_col": "UPDATED_AT"},
+        {"schema": "BILLING", "table": "MONTHLY_USAGE", "pk": "USAGE_ID", "type": "VARCHAR(30)", "business_key": "ENERGY_ACCOUNT_ID + BILLING_MONTH", "watermark_col": "UPDATED_AT"},
+        {"schema": "REF", "table": "CODE_VALUE", "pk": "CODE_VALUE_ID", "type": "NUMBER(10)", "note": "ATTRIBUTES VARIANT column holds machine-readable rate parameters. CODE_LABEL is human-readable text only."}
+      ],
+      "export_views": [
+        {"view": "STAGING.VW_DAILY_CUSTOMER_EXPORT", "grain": "one row per CUSTOMER", "watermark": "RECORD_EFFECTIVE_TS = GREATEST(CUSTOMER.UPDATED_AT, EMAIL_UPDATED_AT, PHONE_UPDATED_AT)"},
+        {"view": "STAGING.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT", "grain": "one row per ENERGY_ACCOUNT", "watermark": "RECORD_EFFECTIVE_TS = GREATEST(all 7 contributing UPDATED_AT values)"},
+        {"view": "STAGING.VW_MONTHLY_USAGE_BILLING_EXPORT", "grain": "one row per USAGE_ID", "watermark": "UPDATED_AT from BILLING.MONTHLY_USAGE", "note": "Includes Snowflake-computed billing charges"}
+      ]
+    },
+    {
+      "id": "ICA-03",
+      "type": "target_data_dictionary",
+      "title": "Target Data Dictionary (Oracle)",
+      "description": "Oracle target tables in CDP_LOADER schema (Oracle 23ai Free).",
+      "target_system": "Oracle 23ai Free FREEPDB1",
+      "tables": [
+        {"table": "TGT_CUSTOMER", "pk": "CUSTOMER_ID VARCHAR2(20)", "business_key": "CUSTOMER_ID", "note": "Loaded from VW_DAILY_CUSTOMER_EXPORT"},
+        {"table": "TGT_ENERGY_ACCOUNT", "pk": "ENERGY_ACCOUNT_ID VARCHAR2(20)", "fk": "CUSTOMER_ID → TGT_CUSTOMER", "note": "Loaded from VW_DAILY_CUSTOMER_ACCOUNT_EXPORT"},
+        {"table": "TGT_BILLING_ACCOUNT", "pk": "BILLING_ACCOUNT_ID VARCHAR2(20)", "fk": "ENERGY_ACCOUNT_ID → TGT_ENERGY_ACCOUNT"},
+        {"table": "TGT_PREMISE", "pk": "PREMISE_ID VARCHAR2(20)", "fk": "ENERGY_ACCOUNT_ID → TGT_ENERGY_ACCOUNT"},
+        {"table": "TGT_METER", "pk": "METER_ID VARCHAR2(20)", "fk": "PREMISE_ID → TGT_PREMISE"},
+        {"table": "TGT_MONTHLY_USAGE", "pk": "USAGE_ID VARCHAR2(30)", "fk": "ENERGY_ACCOUNT_ID → TGT_ENERGY_ACCOUNT", "unique": "ENERGY_ACCOUNT_ID + BILLING_MONTH", "note": "Loaded from VW_MONTHLY_USAGE_BILLING_EXPORT"},
+        {"table": "ETL_JOB_RUN", "pk": "RUN_ID NUMBER(19) IDENTITY", "note": "One row per ETL job execution"},
+        {"table": "ETL_WATERMARK", "pk": "WATERMARK_ID NUMBER(10) IDENTITY", "unique": "JOB_TYPE + TABLE_NAME", "note": "Per-table incremental watermarks"},
+        {"table": "ETL_RECORD_ERROR", "pk": "ERROR_ID NUMBER(19) IDENTITY", "fk": "RUN_ID → ETL_JOB_RUN", "note": "Rejected records with error codes"},
+        {"table": "ETL_RECONCILIATION", "pk": "RECON_ID NUMBER(19) IDENTITY", "fk": "RUN_ID → ETL_JOB_RUN", "note": "Source-to-target count and aggregate comparisons"}
+      ]
+    },
+    {
+      "id": "ICA-05",
+      "type": "column_level_mappings",
+      "title": "Column-Level Mappings",
+      "description": "Machine-readable column mapping rules. Each entry has a stable CM-NNN identifier.",
+      "key_mappings": [
+        {"id": "CM-020", "source": "VW_DAILY_CUSTOMER_EXPORT.CUSTOMER_ID", "target": "TGT_CUSTOMER.CUSTOMER_ID", "transform": "Direct", "validation": "VR-CUST-001", "mandatory": true, "business_key": true},
+        {"id": "CM-027", "source": "VW_DAILY_CUSTOMER_EXPORT.CUSTOMER_STATUS", "target": "TGT_CUSTOMER.ACCOUNT_STATUS", "transform": "TR-05: code translate", "validation": "VR-CUST-006", "mandatory": true},
+        {"id": "CM-028", "source": "VW_DAILY_CUSTOMER_EXPORT.IS_INACTIVE", "target": "TGT_CUSTOMER.IS_ACTIVE", "transform": "TR-01: IS_INACTIVE=TRUE→0, FALSE→1", "validation": "None", "mandatory": true},
+        {"id": "CM-FNAME", "source": "VW_DAILY_CUSTOMER_EXPORT.FULL_NAME_NORMALIZED", "target": "TGT_CUSTOMER.FULL_NAME_NORMALIZED", "transform": "TR-COMB-01: pre-computed in Snowflake view", "validation": "VR-CUST-004", "mandatory": true},
+        {"id": "CM-EA-001", "source": "VW_DAILY_CUSTOMER_ACCOUNT_EXPORT.ENERGY_ACCOUNT_ID", "target": "TGT_ENERGY_ACCOUNT.ENERGY_ACCOUNT_ID", "transform": "Direct", "validation": "VR-EA-001", "mandatory": true, "business_key": true},
+        {"id": "CM-USG-001", "source": "VW_MONTHLY_USAGE_BILLING_EXPORT.USAGE_ID", "target": "TGT_MONTHLY_USAGE.USAGE_ID", "transform": "Direct", "validation": "VR-USAGE-001+", "mandatory": true, "business_key": true},
+        {"id": "CM-USG-CALC", "source": "VW_MONTHLY_USAGE_BILLING_EXPORT.CALC_*", "target": "TGT_MONTHLY_USAGE.{FIXED,ENERGY,DEMAND,SUBTOTAL,TAX,TOTAL}_CHARGE", "transform": "Layer 1 Snowflake computed — validator checks not null, not negative", "validation": "VR-USAGE-008,009,010"}
+      ]
+    },
+    {
+      "id": "ICA-06",
+      "type": "transformation_rules",
+      "title": "Transformation Rules",
+      "description": "Two-layer transformation: Layer 1 executes in Snowflake views, Layer 2 in Spring Batch processors.",
+      "rules": [
+        {"id": "TR-COMB-01", "layer": "Snowflake Layer 1", "name": "FullNameNormalized", "description": "TRIM(UPPER(FIRST_NAME) || ' ' || COALESCE(UPPER(MIDDLE_NAME) || ' ', '') || UPPER(LAST_NAME)) — computed by VW_DAILY_CUSTOMER_EXPORT"},
+        {"id": "TR-COMB-02", "layer": "Snowflake Layer 1", "name": "FullAddress", "description": "TRIM(ADDRESS_LINE1 || COALESCE(', ' || ADDRESS_LINE2, '') || ', ' || CITY || ', ' || STATE_CODE || ' ' || ZIP_CODE)"},
+        {"id": "TR-BILL-02", "layer": "Snowflake Layer 1", "name": "FixedCharge", "description": "FIXED_RATE (direct pass-through). NULL if rate plan has no fixed component."},
+        {"id": "TR-BILL-03", "layer": "Snowflake Layer 1", "name": "EnergyCharge", "description": "ROUND(KWH_USAGE * ENERGY_RATE_PER_KWH, 2). NULL if ENERGY_RATE_PER_KWH is NULL."},
+        {"id": "MU-AC-09", "layer": "Snowflake Layer 1", "name": "DemandCharge", "description": "CASE WHEN PEAK_DEMAND_KW IS NOT NULL AND DEMAND_RATE_PER_KW IS NOT NULL THEN ROUND(PEAK_DEMAND_KW * DEMAND_RATE_PER_KW, 2) ELSE 0 END. NULL demand_rate → 0, not NULL."},
+        {"id": "TR-BILL-06", "layer": "Snowflake Layer 1", "name": "TaxAmount", "description": "ROUND(CALC_SUBTOTAL * TAX_RATE, 2). NULL if subtotal or tax_rate is NULL."},
+        {"id": "TR-BILL-07", "layer": "Snowflake Layer 1", "name": "TotalBilled", "description": "CALC_SUBTOTAL + CALC_TAX_AMOUNT. NULL if either addend is NULL."},
+        {"id": "TR-01", "layer": "Spring Batch Layer 2", "name": "BooleanToNumber", "description": "TRUE→1, FALSE→0 for Oracle NUMBER(1,0) columns (IS_ACTIVE, IS_CORRECTION, AUTO_PAY_ENROLLED, PAPERLESS_ENROLLED)"},
+        {"id": "TR-RANK-01", "layer": "Snowflake Layer 1", "name": "PrimaryEmailSelection", "description": "QUALIFY ROW_NUMBER() OVER (PARTITION BY CUSTOMER_ID ORDER BY EFFECTIVE_DATE DESC) = 1 WHERE CONTACT_TYPE='EMAIL' AND IS_PRIMARY=TRUE"},
+        {"id": "TR-RANK-02", "layer": "Snowflake Layer 1", "name": "CurrentBillingAccount", "description": "QUALIFY ROW_NUMBER() OVER (PARTITION BY ENERGY_ACCOUNT_ID ORDER BY EFFECTIVE_DATE DESC) = 1 WHERE END_DATE IS NULL OR END_DATE >= CURRENT_DATE()"},
+        {"id": "TR-RANK-03", "layer": "Snowflake Layer 1", "name": "ActiveMeter", "description": "QUALIFY ROW_NUMBER() OVER (PARTITION BY PREMISE_ID ORDER BY INSTALL_DATE DESC) = 1 WHERE IS_ACTIVE=TRUE"}
+      ]
+    },
+    {
+      "id": "ICA-07",
+      "type": "validation_rules",
+      "title": "Validation Rules",
+      "description": "Record-level validation rules. REJECT causes RecordValidationException → ETL_RECORD_ERROR. LOG WARN continues processing.",
+      "rules": [
+        {"id": "VR-CUST-001", "entity": "CUSTOMER", "field": "CUSTOMER_ID", "condition": "NOT NULL", "action": "REJECT", "error_code": "VAL-CUST-001"},
+        {"id": "VR-CUST-002", "entity": "CUSTOMER", "field": "FIRST_NAME", "condition": "NOT NULL OR BLANK", "action": "REJECT", "error_code": "VAL-CUST-002"},
+        {"id": "VR-CUST-003", "entity": "CUSTOMER", "field": "LAST_NAME", "condition": "NOT NULL OR BLANK", "action": "REJECT", "error_code": "VAL-CUST-003"},
+        {"id": "VR-CUST-005", "entity": "CUSTOMER", "field": "CUSTOMER_TYPE", "condition": "IN (RESIDENTIAL, COMMERCIAL, INDUSTRIAL)", "action": "REJECT", "error_code": "VAL-CUST-005"},
+        {"id": "VR-CUST-006", "entity": "CUSTOMER", "field": "ACCOUNT_STATUS", "condition": "IN (ACTIVE, INACTIVE, SUSPENDED, PENDING)", "action": "REJECT", "error_code": "VAL-STATUS-001"},
+        {"id": "VR-EA-001", "entity": "ENERGY_ACCOUNT", "field": "ENERGY_ACCOUNT_ID", "condition": "NOT NULL", "action": "REJECT", "error_code": "VAL-EA-001"},
+        {"id": "VR-USAGE-003", "entity": "MONTHLY_USAGE", "field": "BILL_END_DATE vs BILL_START_DATE", "condition": "END >= START", "action": "REJECT", "error_code": "VAL-USAGE-003", "test_data": "USG-INVD-* records intentionally violate this rule"},
+        {"id": "VR-USAGE-005", "entity": "MONTHLY_USAGE", "field": "KWH_USAGE", "condition": ">= 0", "action": "REJECT", "error_code": "VAL-USAGE-005"},
+        {"id": "VR-USAGE-006", "entity": "MONTHLY_USAGE", "field": "PEAK_DEMAND_KW", "condition": "IF PRESENT: >= 0", "action": "REJECT", "error_code": "VAL-USAGE-006", "test_data": "USG-INVK-* records intentionally violate this rule"},
+        {"id": "VR-USAGE-010", "entity": "MONTHLY_USAGE", "field": "TOTAL_BILLED_AMOUNT", "condition": ">= 0 AND NOT NULL", "action": "REJECT", "error_code": "VAL-USAGE-010"},
+        {"id": "VR-USAGE-011", "entity": "MONTHLY_USAGE", "field": "BILL_TOTAL_CONSISTENCY", "condition": "ABS(TOTAL - (ENERGY + TAX)) <= 0.01", "action": "LOG_WARNING — do not reject", "error_code": "WARN-USAGE-011"}
+      ]
+    },
+    {
+      "id": "ICA-09",
+      "type": "watermark_rules",
+      "title": "Incremental Loading and Watermark Rules",
+      "description": "Composite per-table watermark strategy for multi-source incremental detection.",
+      "watermark_tables": [
+        {"source_table": "CUSTOMER_EXPORT", "etl_watermark_key": "TABLE_NAME='CUSTOMER_EXPORT'", "stable_id": "CUSTOMER_ID"},
+        {"source_table": "CUSTOMER_ACCOUNT_EXPORT", "etl_watermark_key": "TABLE_NAME='CUSTOMER_ACCOUNT_EXPORT'", "stable_id": "ENERGY_ACCOUNT_ID"},
+        {"source_table": "MONTHLY_USAGE_EXPORT", "etl_watermark_key": "TABLE_NAME='MONTHLY_USAGE_EXPORT'", "stable_id": "USAGE_ID"}
+      ],
+      "composite_condition": "RECORD_EFFECTIVE_TS > :lastTimestamp OR (RECORD_EFFECTIVE_TS = :lastTimestamp AND STABLE_SOURCE_ID > :lastSourceId)",
+      "order_by": "RECORD_EFFECTIVE_TS ASC, STABLE_SOURCE_ID ASC",
+      "advance_rule": "Update ETL_WATERMARK only AFTER successful Oracle target commit. Never advance past unprocessed or rejected records unless error/replay design explicitly handles replay.",
+      "first_run": "First run uses EPOCH_MIN = 1970-01-01T00:00:00Z — reads all records",
+      "idempotency": "Rerun with no new data completes with zero writes and leaves watermark unchanged"
+    },
+    {
+      "id": "ICA-10",
+      "type": "initial_load_rules",
+      "title": "Initial Load Rules",
+      "description": "Rules governing the one-time initial full-load of all Snowflake data into Oracle.",
+      "load_sequence": [
+        "Step 1: loadCustomersStep — VW_DAILY_CUSTOMER_EXPORT → TGT_CUSTOMER",
+        "Step 2: loadCustomerAccountsStep — VW_DAILY_CUSTOMER_ACCOUNT_EXPORT → TGT_ENERGY_ACCOUNT + TGT_BILLING_ACCOUNT + TGT_PREMISE + TGT_METER",
+        "Step 3: loadMonthlyUsageStep — VW_MONTHLY_USAGE_BILLING_EXPORT → TGT_MONTHLY_USAGE"
+      ],
+      "rules": [
+        {"id": "IL-PRE-01", "rule": "Flyway V001-V004 must be applied before initial load runs"},
+        {"id": "IL-PRE-05", "rule": "Only one initial load job at a time. Concurrent DAILY or MONTHLY jobs also blocked. Returns HTTP 409."},
+        {"id": "IL-IDEMPOTENT", "rule": "All steps use Oracle MERGE — safe to rerun"},
+        {"id": "IL-WM", "rule": "Watermark stored only after successful step commit. Allows restart from failure point."}
+      ]
+    },
+    {
+      "id": "ICA-12",
+      "type": "monthly_usage_rules",
+      "title": "Monthly Usage Load Rules",
+      "description": "Rules for monthly electricity usage and billing load. Charge calculations performed in Snowflake Layer 1.",
+      "intentional_invalid_records": [
+        {"pattern": "USG-INVK-*", "violation": "VR-USAGE-006 PEAK_DEMAND_KW negative", "expected_result": "REJECT → ETL_RECORD_ERROR"},
+        {"pattern": "USG-INVD-*", "violation": "VR-USAGE-003 BILL_END_DATE before BILL_START_DATE", "expected_result": "REJECT → ETL_RECORD_ERROR"}
+      ],
+      "dataset_notes": {
+        "normal_rows": 1864,
+        "cohorts": "Two 932-row cohorts — treated as normal demo data",
+        "correction_rows": 3,
+        "boundary_rows": 1,
+        "invalid_rows": 2,
+        "meter_pair_warnings": 4
+      },
+      "calculation_rule_summary": "All 7 charge calculation steps (FIXED, ENERGY, DEMAND, SUBTOTAL, TAX, TOTAL, QUALITY_STATUS) computed in Snowflake. Spring Batch validates results but does not recalculate."
+    },
+    {
+      "id": "ICA-13",
+      "type": "error_handling_rules",
+      "title": "Error Handling Rules",
+      "description": "Specification for ETL_RECORD_ERROR content and rejection behaviour.",
+      "skip_policy": "Spring Batch skip policy catches RecordValidationException only. All other exceptions fail the job.",
+      "error_record_fields": ["RUN_ID", "JOB_NAME", "STEP_NAME", "SOURCE_ENTITY", "SOURCE_RECORD_ID", "ERROR_CODE", "ERROR_MESSAGE", "PAYLOAD_EXCERPT", "ERROR_TIMESTAMP"],
+      "security_rule": "Never store private keys, passwords, tokens, SSN, full customer PII in PAYLOAD_EXCERPT. Store record ID and error context only."
+    }
+  ]
+}

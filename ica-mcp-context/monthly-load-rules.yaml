@@ -1,0 +1,135 @@
+# =============================================================================
+# ICA/MCP Context — Monthly Usage Load Rules
+# =============================================================================
+# Rules governing the MONTHLY_USAGE_JOB execution.
+# Loads monthly electricity consumption and billing records into TGT_MONTHLY_USAGE.
+# =============================================================================
+
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+artifact: monthly-load-rules
+
+job_name: MONTHLY_USAGE_JOB
+
+# ============================================================================
+# Design intent
+# ============================================================================
+design:
+  nature: >
+    Incremental load using BILLING.MONTHLY_USAGE.UPDATED_AT as the watermark.
+    Reads new and corrected monthly usage rows since the last successful run.
+  source_view: STAGING.VW_MONTHLY_USAGE_BILLING_EXPORT
+  demo_data:
+    normal_june_rows: 1864   # two 932-row cohorts (legacy + simulation)
+    correction_rows: 3
+    boundary_row: 1
+    intentional_invalid_rows: 2  # USG-INVK-* and USG-INVD-*
+    meter_pair_warnings: 4
+    note: >
+      Do not hard-code 932 as the expected source row count.
+      The application must process the actual current dataset.
+      Extra cohort rows are documented demo data, not application errors.
+  source_script: infra/snowflake/13-simulate-demo-monthly-run.sql
+  demo_changes_script13:
+    new_rows: 10    # subsequent billing month / run
+    duplicate_business_keys: 0  # must be zero
+    additional_invalid_rows: 0  # no additional invalid rows (unless documented)
+
+# ============================================================================
+# Step execution order
+# ============================================================================
+steps:
+  - step: step1-load-monthly-usage
+    reads_from: STAGING.VW_MONTHLY_USAGE_BILLING_EXPORT
+    watermark_record: MONTHLY_USAGE_EXPORT
+    query_condition: >
+      WHERE (UPDATED_AT > :lastTimestamp)
+         OR (UPDATED_AT = :lastTimestamp AND USAGE_ID > :lastSourceId)
+      ORDER BY UPDATED_AT ASC, USAGE_ID ASC
+    writes_to: TGT_MONTHLY_USAGE
+    order: 1
+    chunk_size: ${cdp.batch.chunk-size:250}
+    dependency: TGT_ENERGY_ACCOUNT must contain FK targets (run initial or daily load first)
+
+# ============================================================================
+# Intentional reject records
+# ============================================================================
+intentional_rejects:
+  description: >
+    Two usage records are intentionally invalid and must be rejected during every load.
+    These are embedded in the demo dataset to verify the error-handling pipeline.
+  records:
+    - pattern: "USAGE_ID LIKE 'USG-INVK-%'"
+      failure_rule: VR-USG-008 (VAL_USAGE_NEGATIVE_KWH)
+      expected_error_code: VAL_USAGE_NEGATIVE_KWH
+      expected_disposition: SKIP → ETL_RECORD_ERROR
+
+    - pattern: "USAGE_ID LIKE 'USG-INVD-%'"
+      failure_rule: VR-USG-006 (VAL_USAGE_DATE_RANGE)
+      expected_error_code: VAL_USAGE_DATE_RANGE
+      expected_disposition: SKIP → ETL_RECORD_ERROR
+
+  verification_query: >
+    SELECT SOURCE_RECORD_ID, ERROR_CODE, ERROR_MESSAGE
+    FROM ETL_RECORD_ERROR
+    WHERE SOURCE_RECORD_ID LIKE 'USG-INV%'
+    ORDER BY CREATED_AT;
+
+# ============================================================================
+# Correction records
+# ============================================================================
+correction_records:
+  description: >
+    IS_CORRECTION = TRUE rows represent billing corrections.
+    These are valid records — USAGE_QUALITY_STATUS = 'CORRECTED'.
+    Must be loaded normally; not rejected.
+  demo_count: 3
+  treatment: MERGE as normal; CORRECTION_REASON preserved; IS_CORRECTION = 1.
+
+# ============================================================================
+# Rate plan NULL propagation handling
+# ============================================================================
+rate_null_handling:
+  scenario: RATE_PLAN code in BILLING.MONTHLY_USAGE has no matching active row in REF.CODE_VALUE
+  view_behaviour: >
+    LEFT JOIN rate_params returns NULL for all rate/charge columns.
+    CALC_FIXED_CHARGE, CALC_ENERGY_CHARGE, CALC_SUBTOTAL, CALC_TAX_AMOUNT,
+    CALC_TOTAL_BILLED will all be NULL.
+    CALC_DEMAND_CHARGE = 0 per ICA MU-AC-09 regardless.
+  processor_response: >
+    VR-RATE-001 triggers: record rejected with VAL_USAGE_MISSING_CHARGES.
+    Written to ETL_RECORD_ERROR.
+
+# ============================================================================
+# Business key uniqueness
+# ============================================================================
+business_key:
+  columns: [ENERGY_ACCOUNT_ID, BILLING_MONTH]
+  oracle_constraint: uq_tgt_usg_ea_month
+  note: >
+    Only one usage record per account per billing month.
+    If a correction (IS_CORRECTION=TRUE) arrives for an existing USAGE_ID,
+    MERGE updates the existing row.  The business key constraint in Oracle
+    prevents two rows for the same account/month.
+
+# ============================================================================
+# Charge reconciliation (post-job)
+# ============================================================================
+reconciliation:
+  kwh_sum:
+    source: SUM(KWH_USAGE) FROM VW_MONTHLY_USAGE_BILLING_EXPORT WHERE <valid rows>
+    target: SUM(KWH_USAGE) FROM TGT_MONTHLY_USAGE
+    note: Excludes intentional rejects from source sum.
+  total_billed_sum:
+    source: SUM(CALC_TOTAL_BILLED) FROM VW_MONTHLY_USAGE_BILLING_EXPORT WHERE <valid rows>
+    target: SUM(TOTAL_BILLED) FROM TGT_MONTHLY_USAGE
+  stored_in: ETL_RECONCILIATION
+
+# ============================================================================
+# Concurrency guard
+# ============================================================================
+concurrency:
+  prevent_concurrent:
+    - Two MONTHLY_USAGE_JOBs simultaneously
+    - MONTHLY_USAGE_JOB while INITIAL_LOAD_JOB is RUNNING
+  returns: HTTP 409 Conflict

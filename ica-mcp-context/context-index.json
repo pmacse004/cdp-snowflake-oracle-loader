@@ -1,0 +1,141 @@
+{
+  "contextPackage": "cdp-snowflake-oracle-loader",
+  "version": "1.0",
+  "description": "ICA/MCP context package for the CDP Snowflake-to-Oracle ETL Loader. Vendor-neutral. No tenant-specific identifiers.",
+  "generatedAt": "2026-07-21",
+  "authority": {
+    "sourceSchema": "infra/snowflake/03-create-source-tables.sql + infra/snowflake/03a-add-reference-attributes.sql",
+    "exportViews": "infra/snowflake/04-create-export-views.sql",
+    "targetSchema": "cdp-loader-batch/src/main/resources/db/migration/V004__create_target_business_tables.sql",
+    "businessRules": "docs/ica-context/ (ICA mapping catalogue)",
+    "note": "Executable DDL is the physical-schema authority. ICA docs are business-rule authority. Where they conflict, DDL wins."
+  },
+  "artifacts": [
+    {
+      "id": "manifest",
+      "file": "manifest.yaml",
+      "description": "Package manifest: artifact inventory, version, owner, scope"
+    },
+    {
+      "id": "business-glossary",
+      "file": "business-glossary.yaml",
+      "description": "Business term definitions: Customer, EnergyAccount, BillingAccount, Premise, Meter, MonthlyUsage"
+    },
+    {
+      "id": "source-schema",
+      "file": "source-schema.yaml",
+      "description": "Snowflake source table definitions, schemas, and column types (authoritative DDL summary)"
+    },
+    {
+      "id": "target-schema",
+      "file": "target-schema.yaml",
+      "description": "Oracle target table definitions, column types, constraints, and indexes"
+    },
+    {
+      "id": "entity-mappings",
+      "file": "entity-mappings.yaml",
+      "description": "Logical entity-to-table mapping: Snowflake source → export view → Oracle target, with load order and FK dependencies"
+    },
+    {
+      "id": "column-mappings",
+      "file": "column-mappings.yaml",
+      "description": "Column-level mapping matrix: source view column → Java type → transformation → Oracle table.column, merge key flags"
+    },
+    {
+      "id": "join-rules",
+      "file": "join-rules.yaml",
+      "description": "CTE structure and JOIN logic for each export view, including deduplication (QUALIFY) and NULL propagation"
+    },
+    {
+      "id": "transformation-rules",
+      "file": "transformation-rules.yaml",
+      "description": "All data transformations (TR-*): charge calculations, type mapping, flag derivation, audit columns"
+    },
+    {
+      "id": "validation-rules",
+      "file": "validation-rules.yaml",
+      "description": "All record validation rules (VR-*) applied in Spring Batch processors; skip vs fatal classification"
+    },
+    {
+      "id": "reference-code-rules",
+      "file": "reference-code-rules.yaml",
+      "description": "Reference code domains (ACCT_STATUS, CUST_TYPE, RATE_PLAN); ATTRIBUTES VARIANT schema; accepted code values"
+    },
+    {
+      "id": "incremental-watermark-rules",
+      "file": "incremental-watermark-rules.yaml",
+      "description": "Watermark strategy: three separate records (CUSTOMER_EXPORT, CUSTOMER_ACCOUNT_EXPORT, MONTHLY_USAGE_EXPORT); boundary conditions"
+    },
+    {
+      "id": "initial-load-rules",
+      "file": "initial-load-rules.yaml",
+      "description": "INITIAL_LOAD_JOB rules: step order (customer → account → usage), MERGE strategy, reconciliation, concurrency"
+    },
+    {
+      "id": "daily-load-rules",
+      "file": "daily-load-rules.yaml",
+      "description": "DAILY_INCREMENTAL_JOB rules: change detection, watermark-based query, zero-change run behaviour"
+    },
+    {
+      "id": "monthly-load-rules",
+      "file": "monthly-load-rules.yaml",
+      "description": "MONTHLY_USAGE_JOB rules: intentional reject patterns (USG-INVK-*, USG-INVD-*), correction records, KWH reconciliation"
+    },
+    {
+      "id": "error-handling-rules",
+      "file": "error-handling-rules.yaml",
+      "description": "Error classification (VALIDATION_ERROR/INFRASTRUCTURE_ERROR/TRANSIENT_ERROR); ETL_RECORD_ERROR schema; error code catalogue"
+    },
+    {
+      "id": "reconciliation-rules",
+      "file": "reconciliation-rules.yaml",
+      "description": "Post-job reconciliation checks (row counts, KWH sum, billed-total sum); ETL_RECONCILIATION schema; dashboard rules"
+    },
+    {
+      "id": "security-classification",
+      "file": "security-classification.yaml",
+      "description": "Data sensitivity levels; PII exclusions; what must never appear in logs/responses/git; CORS and auth model"
+    },
+    {
+      "id": "nonfunctional-requirements",
+      "file": "nonfunctional-requirements.yaml",
+      "description": "Performance targets, chunk sizes, Spring Boot config constraints, testing requirements, build commands"
+    },
+    {
+      "id": "tenant-adapter-template",
+      "file": "tenant-adapter-template.yaml",
+      "description": "Template for adapting the pipeline to a specific utility tenant: connection, rate plans, reference codes, pre-production checklist"
+    }
+  ],
+  "quickReference": {
+    "jobs": ["INITIAL_LOAD_JOB", "DAILY_INCREMENTAL_JOB", "MONTHLY_USAGE_JOB"],
+    "sourceViews": [
+      "STAGING.VW_DAILY_CUSTOMER_EXPORT",
+      "STAGING.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT",
+      "STAGING.VW_MONTHLY_USAGE_BILLING_EXPORT"
+    ],
+    "targetTables": [
+      "TGT_CUSTOMER",
+      "TGT_CUSTOMER_CONTACT",
+      "TGT_ENERGY_ACCOUNT",
+      "TGT_BILLING_ACCOUNT",
+      "TGT_PREMISE",
+      "TGT_METER",
+      "TGT_MONTHLY_USAGE"
+    ],
+    "watermarkRecords": [
+      "CUSTOMER_EXPORT",
+      "CUSTOMER_ACCOUNT_EXPORT",
+      "MONTHLY_USAGE_EXPORT"
+    ],
+    "intentionalRejects": ["USG-INVK-*", "USG-INVD-*"],
+    "keyConstraints": {
+      "flyway": "10.12.0 (flyway-core + flyway-database-oracle + flyway-maven-plugin)",
+      "oracleDataSource": "@Primary",
+      "snowflakeDataSource": "never @Primary",
+      "batchInitSchema": "never",
+      "ddlAuto": "none",
+      "keyAuth": "PKCS#8 RSA key-pair only — no password fallback"
+    }
+  }
+}

@@ -1,0 +1,58 @@
+# =============================================================================
+# CDP Loader -- Local Development Profile Template
+# =============================================================================
+# INSTRUCTIONS
+#   1. Copy this file to:
+#        cdp-loader-api/src/main/resources/application-local.yml
+#   2. Set values below -- either inline or via environment variables
+#   3. This file is listed in .gitignore -- NEVER commit it
+#
+# ACTIVATE
+#   IDE run configuration : set Spring Active Profiles = local
+#   Maven command line    : -Dspring-boot.run.profiles=local
+#   Fat JAR               : -Dspring.profiles.active=local
+#
+# IMPORTANT: Docker Compose infra/docker/.env is NOT read by the Spring Boot
+#   process.  You must supply CDP_ORACLE_PASSWORD (and all other variables)
+#   separately -- either as OS environment variables in your shell session
+#   or as inline values in this file.
+#   See docs/operations/environment-variables.md for all variables.
+# =============================================================================
+
+spring:
+  datasource:
+    # JDBC URL for local Oracle Free container
+    url:      "${CDP_ORACLE_JDBC_URL:jdbc:oracle:thin:@//localhost:1521/FREEPDB1}"
+    # CDP_LOADER is both the Flyway schema owner and the runtime user (demo only).
+    # See infra/oracle/00-dba-bootstrap.sql for the production separation note.
+    username: "${CDP_ORACLE_USERNAME:CDP_LOADER}"
+    # Supply via environment variable -- do NOT write the real password here.
+    # PowerShell:  $env:CDP_ORACLE_PASSWORD = "YourStrongPassword"
+    # Or set it inline below for local dev only (gitignored file):
+    password: "${CDP_ORACLE_PASSWORD}"
+
+cdp:
+  snowflake:
+    account:          "${CDP_SF_ACCOUNT:QI79280.ap-southeast-7.aws}"
+    user:             "${CDP_SF_USER:SVC_CDP_LOADER}"
+    warehouse:        "${CDP_SF_WAREHOUSE:CDP_LOADER_WH}"
+    database:         "${CDP_SF_DATABASE:CDP_UTIL_DB}"
+    role:             "${CDP_SF_ROLE:CDP_LOADER_ROLE}"
+    # Absolute path to the PKCS#8 private key file -- update for your machine
+    private-key-path: "${CDP_SF_PRIVATE_KEY_PATH:C:\\Users\\YOUR_USERNAME\\.cdp-loader\\keys\\snowflake_rsa_key.p8}"
+
+  batch:
+    chunk-size: 100             # smaller for local dev iteration speed
+    fatal-error-threshold: 10
+
+    daily-load:
+      schedule-enabled: false   # trigger manually via REST API in dev
+
+    monthly-load:
+      schedule-enabled: false
+
+logging:
+  level:
+    com.ibm.cdp: DEBUG
+    org.springframework.batch: DEBUG
+    org.flywaydb: DEBUG

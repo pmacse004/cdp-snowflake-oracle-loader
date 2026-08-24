@@ -1,0 +1,252 @@
+# =============================================================================
+# ICA/MCP Context — Validation Rules
+# =============================================================================
+# Every validation rule applied in Spring Batch processors.
+# Rules are checked per-record; failures are written to ETL_RECORD_ERROR
+# (with SKIP) or fail the job (with FATAL classification).
+#
+# Rule IDs match Java validator classes:
+#   CustomerValidator, CustomerAccountValidator, MonthlyUsageValidator
+# =============================================================================
+
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+artifact: validation-rules
+
+failure_dispositions:
+  SKIP: Record rejected; written to ETL_RECORD_ERROR; job continues.
+  FATAL: Unexpected infrastructure/configuration error; job fails.
+
+# ============================================================================
+# CUSTOMER validation rules  (CustomerValidator.java)
+# ============================================================================
+customer_rules:
+
+  - id: VR-CUST-001
+    field: CUSTOMER_ID
+    description: Customer ID is required and must not be blank.
+    condition: "customerRecord.customerId == null || customerId.isBlank()"
+    error_code: VAL_CUSTOMER_MISSING_ID
+    disposition: SKIP
+    reject_to: ETL_RECORD_ERROR
+
+  - id: VR-CUST-002
+    fields: [FIRST_NAME, LAST_NAME, FULL_NAME_NORMALIZED]
+    description: First name and last name are required; full normalized name must be non-blank.
+    conditions:
+      - "firstName == null || firstName.isBlank() → VAL_CUSTOMER_MISSING_NAME"
+      - "lastName == null || lastName.isBlank() → VAL_CUSTOMER_MISSING_NAME"
+      - "fullNameNormalized == null || fullNameNormalized.isBlank() → VAL_CUSTOMER_MISSING_NAME"
+    error_code: VAL_CUSTOMER_MISSING_NAME
+    disposition: SKIP
+
+  - id: VR-CUST-003
+    field: CUSTOMER_TYPE
+    description: Customer type must be RESIDENTIAL, COMMERCIAL, or INDUSTRIAL.
+    condition: "!Set.of('RESIDENTIAL','COMMERCIAL','INDUSTRIAL').contains(customerType)"
+    error_code: VAL_CUSTOMER_INVALID_TYPE
+    disposition: SKIP
+    notes: Other values (including null) cause rejection.
+
+  - id: VR-CUST-004
+    field: CUSTOMER_STATUS (ACCOUNT_STATUS)
+    description: Customer status must be ACTIVE, INACTIVE, SUSPENDED, or PENDING.
+    condition: "!Set.of('ACTIVE','INACTIVE','SUSPENDED','PENDING').contains(customerStatus)"
+    error_code: VAL_CUSTOMER_INVALID_STATUS
+    disposition: SKIP
+
+# ============================================================================
+# ENERGY ACCOUNT / CUSTOMER ACCOUNT validation rules  (CustomerAccountValidator.java)
+# ============================================================================
+energy_account_rules:
+
+  - id: VR-EA-001
+    field: ENERGY_ACCOUNT_ID
+    description: Energy account ID is required.
+    condition: "energyAccountId == null || energyAccountId.isBlank()"
+    error_code: VAL_ACCOUNT_MISSING_ID
+    disposition: SKIP
+
+  - id: VR-EA-002
+    field: CUSTOMER_ID
+    description: Customer ID (FK reference) is required.
+    condition: "customerId == null || customerId.isBlank()"
+    error_code: VAL_ACCOUNT_MISSING_CUSTOMER_ID
+    disposition: SKIP
+    notes: >
+      FK existence in Oracle (TGT_CUSTOMER) is enforced at write time via FK constraint.
+      If the FK constraint fires, the batch writer catches ORA-02291 and rejects the record.
+
+  - id: VR-EA-003
+    field: ACCOUNT_NUMBER
+    description: Account number is required.
+    condition: "accountNumber == null || accountNumber.isBlank()"
+    error_code: VAL_ACCOUNT_MISSING_ACCOUNT_NUMBER
+    disposition: SKIP
+
+  - id: VR-EA-004
+    field: ACCOUNT_STATUS (Energy Account)
+    description: Energy account status must be ACTIVE, INACTIVE, SUSPENDED, or PENDING.
+    condition: "!Set.of('ACTIVE','INACTIVE','SUSPENDED','PENDING').contains(accountStatus)"
+    error_code: VAL_ACCOUNT_INVALID_STATUS
+    disposition: SKIP
+
+  - id: VR-EA-005
+    field: RATE_CLASS
+    description: Rate class is required.
+    condition: "rateClass == null || rateClass.isBlank()"
+    error_code: VAL_ACCOUNT_MISSING_RATE_CLASS
+    disposition: SKIP
+
+  - id: VR-EA-006
+    field: OPEN_DATE
+    description: Account open date is required.
+    condition: "openDate == null"
+    error_code: VAL_ACCOUNT_MISSING_OPEN_DATE
+    disposition: SKIP
+
+# ============================================================================
+# MONTHLY USAGE validation rules  (MonthlyUsageValidator.java)
+# ============================================================================
+monthly_usage_rules:
+
+  - id: VR-USG-001
+    field: USAGE_ID
+    description: Usage ID is required.
+    condition: "usageId == null || usageId.isBlank()"
+    error_code: VAL_USAGE_MISSING_ID
+    disposition: SKIP
+
+  - id: VR-USG-002
+    field: ENERGY_ACCOUNT_ID
+    description: Energy account ID is required.
+    condition: "energyAccountId == null || energyAccountId.isBlank()"
+    error_code: VAL_USAGE_MISSING_ACCOUNT_ID
+    disposition: SKIP
+
+  - id: VR-USG-003
+    field: PREMISE_ID
+    description: Premise ID is required.
+    condition: "premiseId == null || premiseId.isBlank()"
+    error_code: VAL_USAGE_MISSING_PREMISE_ID
+    disposition: SKIP
+
+  - id: VR-USG-004
+    field: METER_ID
+    description: Meter ID is required.
+    condition: "meterId == null || meterId.isBlank()"
+    error_code: VAL_USAGE_MISSING_METER_ID
+    disposition: SKIP
+
+  - id: VR-USG-005
+    field: BILLING_MONTH
+    description: Billing month is required and must match YYYY-MM format.
+    conditions:
+      - "billingMonth == null → VAL_USAGE_MISSING_BILLING_MONTH"
+      - "!billingMonth.matches('\\d{4}-\\d{2}') → VAL_USAGE_INVALID_BILLING_MONTH"
+    error_code: VAL_USAGE_MISSING_BILLING_MONTH / VAL_USAGE_INVALID_BILLING_MONTH
+    disposition: SKIP
+
+  - id: VR-USG-006
+    fields: [BILL_START_DATE, BILL_END_DATE]
+    description: >
+      Bill start date and end date are required.
+      End date must be >= start date.
+      Intentional reject pattern USG-INVD-* has BILL_END_DATE < BILL_START_DATE.
+    conditions:
+      - "billStartDate == null → VAL_USAGE_MISSING_DATES"
+      - "billEndDate == null → VAL_USAGE_MISSING_DATES"
+      - "billEndDate.isBefore(billStartDate) → VAL_USAGE_DATE_RANGE"
+    error_codes:
+      - VAL_USAGE_MISSING_DATES
+      - VAL_USAGE_DATE_RANGE
+    disposition: SKIP
+    intentional_reject: USG-INVD-* rows have BILL_END_DATE before BILL_START_DATE by design.
+
+  - id: VR-USG-007
+    field: BILLING_DAYS
+    description: Billing days must be >= 1.
+    condition: "billingDays < 1"
+    error_code: VAL_USAGE_INVALID_BILLING_DAYS
+    disposition: SKIP
+
+  - id: VR-USG-008
+    field: KWH_USAGE
+    description: >
+      KWH usage is required and must be >= 0.
+      Negative KWH_USAGE constitutes the intentional reject pattern (USG-INVK-*).
+    conditions:
+      - "kwhUsage == null → VAL_USAGE_MISSING_KWH"
+      - "kwhUsage.compareTo(BigDecimal.ZERO) < 0 → VAL_USAGE_NEGATIVE_KWH"
+    error_codes:
+      - VAL_USAGE_MISSING_KWH
+      - VAL_USAGE_NEGATIVE_KWH
+    disposition: SKIP
+    intentional_reject: USG-INVK-* rows have negative KWH_USAGE by design.
+
+  - id: VR-USG-009
+    field: PEAK_DEMAND_KW
+    description: Peak demand KW, when present, must be >= 0.
+    condition: "peakDemandKw != null && peakDemandKw.compareTo(BigDecimal.ZERO) < 0"
+    error_code: VAL_USAGE_NEGATIVE_DEMAND
+    disposition: SKIP
+
+  - id: VR-USG-010
+    field: RATE_PLAN
+    description: Rate plan code is required.
+    condition: "ratePlan == null || ratePlan.isBlank()"
+    error_code: VAL_USAGE_MISSING_RATE_PLAN
+    disposition: SKIP
+
+  - id: VR-RATE-001
+    fields: [CALC_FIXED_CHARGE, CALC_ENERGY_CHARGE, CALC_SUBTOTAL, CALC_TAX_AMOUNT, CALC_TOTAL_BILLED]
+    description: >
+      All required calculated charges must be non-null.
+      A NULL calculated charge indicates the rate plan code was not found
+      in REF.CODE_VALUE (LEFT JOIN returned NULL) or ATTRIBUTES had no value.
+      This is a data quality issue, not a missing field — must reject.
+    condition: >
+      calcFixedCharge == null || calcEnergyCharge == null ||
+      calcSubtotal == null || calcTaxAmount == null || calcTotalBilled == null
+    error_code: VAL_USAGE_MISSING_CHARGES
+    disposition: SKIP
+    notes: >
+      Exception: CALC_DEMAND_CHARGE = 0 is always valid per ICA MU-AC-09.
+      Only the five listed charge columns trigger this rule.
+
+  - id: VR-USG-011
+    field: CALC_TOTAL_BILLED
+    description: Total billed amount must be >= 0 (after null check by VR-RATE-001).
+    condition: "calcTotalBilled != null && calcTotalBilled.compareTo(BigDecimal.ZERO) < 0"
+    error_code: VAL_USAGE_NEGATIVE_TOTAL
+    disposition: SKIP
+
+  - id: VR-USG-012
+    field: USAGE_QUALITY_STATUS
+    description: >
+      Usage quality status must be ACTUAL, ESTIMATED, or CORRECTED.
+      Derived by the view — invalid value indicates a view logic issue.
+    condition: "!Set.of('ACTUAL','ESTIMATED','CORRECTED').contains(usageQualityStatus)"
+    error_code: VAL_USAGE_INVALID_QUALITY_STATUS
+    disposition: SKIP
+
+# ============================================================================
+# SKIP and RETRY policy
+# ============================================================================
+skip_policy:
+  skip_exceptions:
+    - com.ibm.cdp.loader.core.exception.RecordValidationException
+  skip_limit: 100   # configurable via cdp.batch.skip-limit property
+  notes: >
+    Only RecordValidationException (record-level data quality failures) are skippable.
+    Infrastructure errors (ORA-*, SnowflakeSQL*, configuration) must NOT be skipped.
+
+retry_policy:
+  retryable_exceptions:
+    - java.sql.SQLTransientConnectionException
+    - net.snowflake.client.jdbc.SnowflakeSQLException (transient only, determined by getSQLState)
+  max_retry_attempts: 3
+  backoff_initial_ms: 500
+  notes: >
+    Permanent validation errors (RecordValidationException) must NOT be retried.
+    Configuration errors (missing datasource, wrong schema) must NOT be retried.

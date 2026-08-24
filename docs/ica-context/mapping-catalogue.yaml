@@ -1,0 +1,753 @@
+# Mapping Catalogue
+# CDP Snowflake to Oracle Data Loader
+# ICA Document: ICA-05-YAML
+# Version: 1.1 (Phase 1 Amendment)
+# Amendment: multi-source structure; sources list supports multiple tables per mapping;
+#            joins, ranking rules, calculations and lineage captured per mapping.
+
+catalogue:
+  project: "CDP Snowflake to Oracle Data Loader"
+  version: "1.1"
+  status: "ACTIVE"
+  source_database: "CDP_DW"
+  source_platform: "Snowflake"
+  target_database: "Oracle Database Free 23c"
+  target_platform: "Oracle"
+  ica_document_id: "ICA-05"
+
+extraction_views:
+  - view_id: LD-01
+    view_name: "CDP_DW.CLEAN.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT"
+    description: "Denormalised customer/account row joining 7 source tables with ranking, status derivation and reference lookups"
+    load_type: INITIAL_AND_DAILY
+    primary_table: "RAW.ENERGY_ACCOUNT"
+    joins:
+      - type: INNER
+        table: "RAW.CUSTOMER"
+        alias: c
+        condition: "c.CUSTOMER_ID = ea.CUSTOMER_ID"
+      - type: LEFT
+        table: "ranked_contact CTE"
+        alias: cc
+        condition: "cc.CUSTOMER_ID = c.CUSTOMER_ID AND cc.rn = 1"
+        cte_definition: "ROW_NUMBER() OVER (PARTITION BY CUSTOMER_ID ORDER BY IS_PRIMARY DESC, EFFECTIVE_DATE DESC, CONTACT_ID DESC) WHERE CONTACT_TYPE='MAILING' AND (EXPIRY_DATE IS NULL OR EXPIRY_DATE >= CURRENT_DATE())"
+      - type: LEFT
+        table: "ranked_billing CTE"
+        alias: ba
+        condition: "ba.ENERGY_ACCOUNT_ID = ea.ENERGY_ACCOUNT_ID AND ba.rn = 1"
+        cte_definition: "ROW_NUMBER() OVER (PARTITION BY ENERGY_ACCOUNT_ID ORDER BY EFFECTIVE_DATE DESC, BILLING_ACCOUNT_ID DESC) WHERE EFFECTIVE_DATE <= CURRENT_DATE() AND (EXPIRY_DATE IS NULL OR EXPIRY_DATE >= CURRENT_DATE())"
+      - type: LEFT
+        table: "RAW.SERVICE_PREMISE"
+        alias: sp
+        condition: "sp.ENERGY_ACCOUNT_ID = ea.ENERGY_ACCOUNT_ID"
+      - type: LEFT
+        table: "ranked_meter CTE"
+        alias: m
+        condition: "m.PREMISE_ID = sp.PREMISE_ID AND m.rn = 1"
+        cte_definition: "ROW_NUMBER() OVER (PARTITION BY PREMISE_ID ORDER BY INSTALL_DATE DESC, METER_ID DESC) WHERE ACTIVE_FLAG='Y' AND (REMOVAL_DATE IS NULL OR REMOVAL_DATE >= CURRENT_DATE())"
+      - type: LEFT
+        table: "REF.CODE_VALUE"
+        alias: rc_status
+        condition: "rc_status.CODE_DOMAIN = 'ACCT_STATUS' AND rc_status.CODE_VALUE = COMBINED_STATUS_CODE"
+      - type: LEFT
+        table: "REF.CODE_VALUE"
+        alias: rc_rate
+        condition: "rc_rate.CODE_DOMAIN = 'RATE_PLAN' AND rc_rate.CODE_VALUE = ea.RATE_CLASS"
+      - type: LEFT
+        table: "REF.CODE_VALUE"
+        alias: rc_ctype
+        condition: "rc_ctype.CODE_DOMAIN = 'CUST_TYPE' AND rc_ctype.CODE_VALUE = c.CUSTOMER_TYPE"
+
+  - view_id: LD-02
+    view_name: "CDP_DW.CLEAN.VW_MONTHLY_USAGE_BILLING_EXPORT"
+    description: "Monthly usage/billing record with all charge calculations from rate-plan parameters"
+    load_type: MONTHLY
+    primary_table: "RAW.MONTHLY_USAGE"
+    joins:
+      - type: INNER
+        table: "RAW.ENERGY_ACCOUNT"
+        alias: ea
+        condition: "ea.ENERGY_ACCOUNT_ID = u.ENERGY_ACCOUNT_ID"
+      - type: INNER
+        table: "RAW.METER"
+        alias: m
+        condition: "m.METER_ID = u.METER_ID"
+      - type: LEFT
+        table: "current_billing CTE"
+        alias: ba
+        condition: "ba.ENERGY_ACCOUNT_ID = u.ENERGY_ACCOUNT_ID AND ba.rn = 1"
+      - type: LEFT
+        table: "RAW.SERVICE_PREMISE"
+        alias: sp
+        condition: "sp.PREMISE_ID = u.PREMISE_ID"
+      - type: LEFT
+        table: "rate_params CTE from REF.CODE_VALUE"
+        alias: rp
+        condition: "rp.RATE_PLAN = ea.RATE_CLASS"
+        cte_definition: "Parse FIXED_CHARGE_RATE, ENERGY_RATE_PER_KWH, DEMAND_RATE_PER_KW, TAX_RATE from CODE_LABEL JSON for CODE_DOMAIN='RATE_PLAN'"
+
+entities:
+
+  - entity_map_id: EM-01
+    name: REF_CODE_VALUE
+    extraction_source: "CDP_DW.REF.CODE_VALUE (direct - single table)"
+    target_schema: CDP_APP
+    target_table: REF_CODE_VALUE
+    business_key: ["CODE_DOMAIN", "CODE_VALUE"]
+    load_frequency: INITIAL_AND_DAILY
+    columns:
+      - map_id: CM-001
+        sources:
+          - table: "REF.CODE_VALUE"
+            column: CODE_ID
+            alias: cv
+        target_column: SOURCE_CODE_ID
+        target_type: "NUMBER(10)"
+        transform_rule: DIRECT
+        validation_rule: VR-CODE-001
+        mandatory: true
+        business_key: false
+        example_input: "1001"
+        example_output: "1001"
+        active: true
+
+      - map_id: CM-002
+        sources:
+          - table: "REF.CODE_VALUE"
+            column: CODE_DOMAIN
+        target_column: CODE_DOMAIN
+        target_type: "VARCHAR2(50)"
+        transform_rule: DIRECT
+        validation_rule: VR-CODE-002
+        mandatory: true
+        business_key: true
+        example_input: "ACCT_STATUS"
+        example_output: "ACCT_STATUS"
+        active: true
+
+      - map_id: CM-003
+        sources:
+          - table: "REF.CODE_VALUE"
+            column: CODE_VALUE
+        target_column: CODE_VALUE
+        target_type: "VARCHAR2(30)"
+        transform_rule: DIRECT
+        validation_rule: VR-CODE-003
+        mandatory: true
+        business_key: true
+        example_input: "ACT"
+        example_output: "ACT"
+        active: true
+
+      - map_id: CM-006
+        sources:
+          - table: "REF.CODE_VALUE"
+            column: IS_ACTIVE
+        target_column: IS_ACTIVE
+        target_type: "NUMBER(1)"
+        transform_rule: TR-01
+        validation_rule: VR-FLAG-001
+        mandatory: true
+        business_key: false
+        default_value: "1"
+        example_input: "Y"
+        example_output: "1"
+        active: true
+
+  - entity_map_id: EM-02
+    name: CUSTOMER
+    extraction_source: "LD-01 (VW_DAILY_CUSTOMER_ACCOUNT_EXPORT)"
+    target_schema: CDP_APP
+    target_table: CUSTOMER
+    business_key: ["SOURCE_CUSTOMER_ID"]
+    load_frequency: INITIAL_AND_DAILY
+    columns:
+      - map_id: CM-020
+        sources:
+          - table: "RAW.CUSTOMER"
+            column: CUSTOMER_ID
+            alias: c
+        target_column: SOURCE_CUSTOMER_ID
+        target_type: "NUMBER(15)"
+        transform_rule: DIRECT
+        validation_rule: VR-CUST-001
+        mandatory: true
+        business_key: true
+        example_input: "100001"
+        example_output: "100001"
+        active: true
+
+      - map_id: CM-022
+        sources:
+          - table: "RAW.CUSTOMER"
+            column: FIRST_NAME
+            alias: c
+        target_column: FIRST_NAME
+        target_type: "VARCHAR2(100)"
+        transform_rule: TR-02
+        transform_layer: "Spring Batch Layer 2"
+        validation_rule: VR-CUST-002
+        mandatory: true
+        business_key: false
+        pii: true
+        example_input: "JOHN PAUL"
+        example_output: "John Paul"
+        active: true
+
+      - map_id: CM-023
+        sources:
+          - table: "RAW.CUSTOMER"
+            column: LAST_NAME
+            alias: c
+        target_column: LAST_NAME
+        target_type: "VARCHAR2(100)"
+        transform_rule: TR-02
+        transform_layer: "Spring Batch Layer 2"
+        validation_rule: VR-CUST-003
+        mandatory: true
+        business_key: false
+        pii: true
+        example_input: "SMITH-JONES"
+        example_output: "Smith-Jones"
+        active: true
+
+      - map_id: CM-025
+        sources:
+          - table: "RAW.CUSTOMER"
+            column: FIRST_NAME
+            alias: c
+          - table: "RAW.CUSTOMER"
+            column: LAST_NAME
+            alias: c
+        target_column: FULL_NAME
+        target_type: "VARCHAR2(255)"
+        transform_rule: TR-03
+        transform_layer: "Spring Batch Layer 2"
+        validation_rule: VR-CUST-004
+        mandatory: true
+        business_key: false
+        pii: true
+        calculation: "LAST_NAME + ', ' + FIRST_NAME (after title-case)"
+        example_input: "{FIRST_NAME: 'JOHN', LAST_NAME: 'SMITH'}"
+        example_output: "Smith, John"
+        active: true
+
+      - map_id: CM-027
+        sources:
+          - table: "RAW.CUSTOMER"
+            column: ACCOUNT_STATUS
+            alias: c
+          - table: "RAW.ENERGY_ACCOUNT"
+            column: ACCOUNT_STATUS
+            alias: ea
+          - table: "RAW.CUSTOMER"
+            column: DELETED_FLAG
+            alias: c
+          - table: "RAW.ENERGY_ACCOUNT"
+            column: DELETED_FLAG
+            alias: ea
+          - table: "RAW.ENERGY_ACCOUNT"
+            column: END_DATE
+            alias: ea
+        target_column: ACCOUNT_STATUS
+        target_type: "VARCHAR2(20)"
+        transform_rule: TR-COMB-01
+        transform_layer: "Snowflake Layer 1 (COMBINED_STATUS_CODE) + TR-05 in Layer 2"
+        validation_rule: VR-CUST-006
+        mandatory: true
+        business_key: false
+        join_rule: "Multi-condition CASE across CUSTOMER and ENERGY_ACCOUNT; priority: CLOSED > INACTIVE > PENDING > ACTIVE"
+        null_handling: "Default to ACTIVE if no inactive/closed condition met"
+        example_input: "{c.ACCOUNT_STATUS: 'ACT', ea.ACCOUNT_STATUS: 'CLO'}"
+        example_output: "CLOSED"
+        active: true
+
+      - map_id: CM-028
+        sources:
+          - table: "RAW.CUSTOMER"
+            column: ACCOUNT_STATUS
+            alias: c
+          - table: "RAW.ENERGY_ACCOUNT"
+            column: ACCOUNT_STATUS
+            alias: ea
+          - table: "RAW.CUSTOMER"
+            column: DELETED_FLAG
+            alias: c
+          - table: "RAW.ENERGY_ACCOUNT"
+            column: DELETED_FLAG
+            alias: ea
+          - table: "RAW.ENERGY_ACCOUNT"
+            column: END_DATE
+            alias: ea
+        target_column: IS_ACTIVE
+        target_type: "NUMBER(1)"
+        transform_rule: TR-COND-01
+        transform_layer: "Snowflake Layer 1"
+        mandatory: true
+        business_key: false
+        calculation: "1 if no deleted/closed/inactive condition, else 0"
+        example_input: "{ea.END_DATE: '2023-06-01', today: '2025-01-01'}"
+        example_output: "0"
+        active: true
+
+  - entity_map_id: EM-03
+    name: CUSTOMER_CONTACT
+    extraction_source: "LD-01 (ranked_contact CTE)"
+    target_schema: CDP_APP
+    target_table: CUSTOMER_CONTACT
+    business_key: ["SOURCE_CONTACT_ID"]
+    load_frequency: INITIAL_AND_DAILY
+    columns:
+      - map_id: CM-040
+        sources:
+          - table: "RAW.CUSTOMER_CONTACT"
+            column: CONTACT_ID
+            alias: cc
+        target_column: SOURCE_CONTACT_ID
+        target_type: "NUMBER(15)"
+        transform_rule: DIRECT
+        validation_rule: VR-CONT-001
+        mandatory: true
+        business_key: true
+        selection_rule: "TR-RANK-01: ROW_NUMBER rn=1 contact per customer (IS_PRIMARY DESC, EFFECTIVE_DATE DESC, CONTACT_ID DESC)"
+        example_input: "200001"
+        example_output: "200001"
+        active: true
+
+      - map_id: CM-048
+        sources:
+          - table: "RAW.CUSTOMER_CONTACT"
+            column: EMAIL_ADDRESS
+            alias: cc
+        target_column: EMAIL_ADDRESS
+        target_type: "VARCHAR2(255)"
+        transform_rule: TR-06
+        transform_layer: "Spring Batch Layer 2"
+        validation_rule: VR-EMAIL-001
+        mandatory: false
+        business_key: false
+        pii: true
+        null_handling: "If validation fails, set to NULL and write warning to ETL_RECORD_ERROR; do not reject record"
+        example_input: "John.Smith@Example.COM"
+        example_output: "john.smith@example.com"
+        active: true
+
+      - map_id: CM-049
+        sources:
+          - table: "RAW.CUSTOMER_CONTACT"
+            column: PHONE_NUMBER
+            alias: cc
+        target_column: PHONE_NUMBER
+        target_type: "VARCHAR2(20)"
+        transform_rule: TR-07
+        transform_layer: "Spring Batch Layer 2"
+        validation_rule: VR-PHONE-001
+        mandatory: false
+        business_key: false
+        pii: true
+        null_handling: "If E.164 normalisation fails, set to NULL; do not reject record"
+        example_input: "(555) 123-4567"
+        example_output: "+15551234567"
+        active: true
+
+      - map_id: CM-ADDR-01
+        sources:
+          - table: "RAW.CUSTOMER_CONTACT"
+            column: ADDRESS_LINE1
+            alias: cc
+          - table: "RAW.CUSTOMER_CONTACT"
+            column: ADDRESS_LINE2
+            alias: cc
+          - table: "RAW.CUSTOMER_CONTACT"
+            column: CITY
+            alias: cc
+          - table: "RAW.CUSTOMER_CONTACT"
+            column: STATE_CODE
+            alias: cc
+          - table: "RAW.CUSTOMER_CONTACT"
+            column: ZIP_CODE
+            alias: cc
+        target_column: FORMATTED_MAILING_ADDRESS
+        target_type: "VARCHAR2(500)"
+        transform_rule: TR-ADDR-01
+        transform_layer: "Snowflake Layer 1"
+        mandatory: false
+        business_key: false
+        calculation: "TRIM(LINE1) || CASE WHEN LINE2 IS NOT NULL THEN ', ' || TRIM(LINE2) ELSE '' END || CASE WHEN CITY IS NOT NULL THEN ', ' || TRIM(CITY) ELSE '' END || CASE WHEN STATE IS NOT NULL THEN ', ' || TRIM(STATE) ELSE '' END || CASE WHEN ZIP IS NOT NULL THEN ' ' || TRIM(ZIP) ELSE '' END"
+        null_handling: "Absent components silently skipped; no trailing separators"
+        example_input: "{LINE1: '123 Main St', LINE2: null, CITY: 'Springfield', STATE: 'IL', ZIP: '62701'}"
+        example_output: "123 Main St, Springfield, IL 62701"
+        active: true
+
+  - entity_map_id: EM-08
+    name: MONTHLY_USAGE
+    extraction_source: "LD-02 (VW_MONTHLY_USAGE_BILLING_EXPORT)"
+    target_schema: CDP_APP
+    target_table: MONTHLY_USAGE
+    business_key: ["ENERGY_ACCOUNT_ID", "BILLING_MONTH"]
+    load_frequency: MONTHLY
+    correction_logic: "UPDATE if incoming SOURCE_UPDATED_AT > existing SOURCE_UPDATED_AT in Oracle MERGE WHEN MATCHED clause"
+    columns:
+      - map_id: CM-138
+        sources:
+          - table: "RAW.MONTHLY_USAGE"
+            column: KWH_USAGE
+            alias: u
+        target_column: KWH_USAGE
+        target_type: "NUMBER(12,6)"
+        transform_rule: TR-DEC-01
+        transform_layer: "Spring Batch Layer 2"
+        validation_rule: VR-USAGE-005
+        mandatory: true
+        business_key: false
+        rounding_rule: "HALF_EVEN, scale 6"
+        example_input: "850.500"
+        example_output: "850.500000"
+        active: true
+
+      - map_id: CM-BILL-01
+        sources:
+          - table: "RAW.MONTHLY_USAGE"
+            column: CURR_METER_READING
+            alias: u
+          - table: "RAW.MONTHLY_USAGE"
+            column: PREV_METER_READING
+            alias: u
+          - table: "RAW.METER"
+            column: MULTIPLIER
+            alias: m
+        target_column: ADJUSTED_KWH
+        target_type: "NUMBER(12,6)"
+        transform_rule: TR-BILL-01
+        transform_layer: "Snowflake Layer 1"
+        mandatory: true
+        business_key: false
+        calculation: "ROUND((CURR_METER_READING - PREV_METER_READING) * METER_MULTIPLIER, 6)"
+        rounding_rule: "ROUND(x, 6)"
+        null_handling: "METER_MULTIPLIER defaults to 1.0 if null"
+        example_input: "{CURR: 1850.500, PREV: 1000.000, MULTIPLIER: 1.0}"
+        example_output: "850.500000"
+        active: true
+
+      - map_id: CM-BILL-02
+        sources:
+          - table: "REF.CODE_VALUE"
+            column: "CODE_LABEL JSON:fixed"
+            alias: rp
+          - table: "RAW.ENERGY_ACCOUNT"
+            column: RATE_CLASS
+            alias: ea
+        target_column: FIXED_CHARGE
+        target_type: "NUMBER(15,2)"
+        transform_rule: TR-BILL-02
+        transform_layer: "Snowflake Layer 1"
+        mandatory: true
+        business_key: false
+        join_rule: "JOIN REF.CODE_VALUE ON CODE_DOMAIN='RATE_PLAN' AND CODE_VALUE=ea.RATE_CLASS; parse JSON field"
+        calculation: "ROUND(COALESCE(JSON:fixed, 0), 2)"
+        rounding_rule: "ROUND(x, 2)"
+        null_handling: "COALESCE to 0.00 if rate plan not found"
+        example_input: "{RATE_CLASS: 'RES-1', rate_label: '{\"fixed\": 8.50}'}"
+        example_output: "8.50"
+        active: true
+
+      - map_id: CM-BILL-03
+        sources:
+          - table: "RAW.MONTHLY_USAGE"
+            column: KWH_USAGE
+            alias: u
+          - table: "REF.CODE_VALUE"
+            column: "CODE_LABEL JSON:energy"
+            alias: rp
+        target_column: ENERGY_CHARGE
+        target_type: "NUMBER(15,2)"
+        transform_rule: TR-BILL-03
+        transform_layer: "Snowflake Layer 1"
+        mandatory: true
+        business_key: false
+        calculation: "ROUND(KWH_USAGE * COALESCE(JSON:energy, 0), 2)"
+        rounding_rule: "ROUND(x, 2)"
+        example_input: "{KWH_USAGE: 850.5, energy_rate: 0.1150}"
+        example_output: "97.81"
+        active: true
+
+      - map_id: CM-BILL-04
+        sources:
+          - table: "RAW.MONTHLY_USAGE"
+            column: PEAK_DEMAND_KW
+            alias: u
+          - table: "REF.CODE_VALUE"
+            column: "CODE_LABEL JSON:demand"
+            alias: rp
+        target_column: DEMAND_CHARGE
+        target_type: "NUMBER(15,2)"
+        transform_rule: TR-BILL-04
+        transform_layer: "Snowflake Layer 1"
+        mandatory: true
+        business_key: false
+        calculation: "ROUND(COALESCE(PEAK_DEMAND_KW, 0) * COALESCE(JSON:demand, 0), 2)"
+        rounding_rule: "ROUND(x, 2)"
+        null_handling: "0.00 when demand rate is NULL (residential plans)"
+        example_input: "{PEAK_DEMAND_KW: 15.5, demand_rate: 8.50}"
+        example_output: "131.75"
+        active: true
+
+      - map_id: CM-BILL-05
+        sources:
+          - column: FIXED_CHARGE
+          - column: ENERGY_CHARGE
+          - column: DEMAND_CHARGE
+        target_column: SUBTOTAL
+        target_type: "NUMBER(15,2)"
+        transform_rule: TR-BILL-05
+        transform_layer: "Snowflake Layer 1"
+        mandatory: true
+        business_key: false
+        calculation: "ROUND(FIXED_CHARGE + ENERGY_CHARGE + DEMAND_CHARGE, 2)"
+        rounding_rule: "ROUND(x, 2) applied to already-rounded inputs"
+        example_input: "{FIXED: 8.50, ENERGY: 97.81, DEMAND: 0.00}"
+        example_output: "106.31"
+        active: true
+
+      - map_id: CM-BILL-06
+        sources:
+          - column: SUBTOTAL
+          - table: "REF.CODE_VALUE"
+            column: "CODE_LABEL JSON:tax"
+            alias: rp
+        target_column: TAX_AMOUNT
+        target_type: "NUMBER(10,2)"
+        transform_rule: TR-BILL-06
+        transform_layer: "Snowflake Layer 1"
+        mandatory: true
+        business_key: false
+        calculation: "ROUND(SUBTOTAL * COALESCE(JSON:tax, 0), 2)"
+        rounding_rule: "ROUND(x, 2)"
+        example_input: "{SUBTOTAL: 106.31, tax_rate: 0.080}"
+        example_output: "8.50"
+        active: true
+
+      - map_id: CM-BILL-07
+        sources:
+          - column: SUBTOTAL
+          - column: TAX_AMOUNT
+        target_column: TOTAL_BILLED_AMOUNT
+        target_type: "NUMBER(15,2)"
+        transform_rule: TR-BILL-07
+        transform_layer: "Snowflake Layer 1"
+        mandatory: true
+        business_key: false
+        calculation: "ROUND(SUBTOTAL + TAX_AMOUNT, 2)"
+        rounding_rule: "ROUND(x, 2) — uses SUBTOTAL+TAX form for exact additive consistency"
+        example_input: "{SUBTOTAL: 106.31, TAX: 8.50}"
+        example_output: "114.81"
+        active: true
+
+      - map_id: CM-TS-GREATEST
+        sources:
+          - table: "RAW.CUSTOMER"
+            column: UPDATED_AT
+            alias: c
+          - table: "RAW.CUSTOMER_CONTACT"
+            column: UPDATED_AT
+            alias: cc
+          - table: "RAW.ENERGY_ACCOUNT"
+            column: UPDATED_AT
+            alias: ea
+          - table: "RAW.BILLING_ACCOUNT"
+            column: UPDATED_AT
+            alias: ba
+          - table: "RAW.SERVICE_PREMISE"
+            column: UPDATED_AT
+            alias: sp
+          - table: "RAW.METER"
+            column: UPDATED_AT
+            alias: m
+        target_column: RECORD_EFFECTIVE_TS
+        target_type: TIMESTAMP
+        transform_rule: TR-TS-GREATEST-01
+        transform_layer: "Snowflake Layer 1"
+        mandatory: true
+        business_key: false
+        calculation: "GREATEST(c.UPDATED_AT, COALESCE(cc.UPDATED_AT,'1970-01-01'), ea.UPDATED_AT, COALESCE(ba.UPDATED_AT,'1970-01-01'), COALESCE(sp.UPDATED_AT,'1970-01-01'), COALESCE(m.UPDATED_AT,'1970-01-01'))"
+        null_handling: "COALESCE each nullable source timestamp to epoch before GREATEST"
+        example_input: "{c.UPDATED_AT: '2025-01-10', cc.UPDATED_AT: '2025-01-15', ea.UPDATED_AT: '2025-01-08'}"
+        example_output: "2025-01-15T00:00:00Z"
+        active: true
+
+transformation_rules:
+  - rule_id: TR-JOIN-01
+    name: CustomerToEnergyAccountJoin
+    layer: "Snowflake Layer 1"
+    type: INNER_JOIN
+    description: "ENERGY_ACCOUNT INNER JOIN CUSTOMER on CUSTOMER_ID"
+
+  - rule_id: TR-RANK-01
+    name: PrimaryMailingContactSelector
+    layer: "Snowflake Layer 1"
+    type: ROW_NUMBER_SELECTION
+    description: "ROW_NUMBER OVER (PARTITION BY CUSTOMER_ID ORDER BY IS_PRIMARY DESC, EFFECTIVE_DATE DESC, CONTACT_ID DESC) rn=1"
+    filter: "CONTACT_TYPE='MAILING' AND (EXPIRY_DATE IS NULL OR EXPIRY_DATE >= CURRENT_DATE())"
+
+  - rule_id: TR-RANK-02
+    name: CurrentBillingAccountSelector
+    layer: "Snowflake Layer 1"
+    type: ROW_NUMBER_SELECTION
+    description: "ROW_NUMBER OVER (PARTITION BY ENERGY_ACCOUNT_ID ORDER BY EFFECTIVE_DATE DESC, BILLING_ACCOUNT_ID DESC) rn=1"
+    filter: "EFFECTIVE_DATE <= CURRENT_DATE() AND (EXPIRY_DATE IS NULL OR EXPIRY_DATE >= CURRENT_DATE())"
+
+  - rule_id: TR-RANK-03
+    name: CurrentActiveMeterSelector
+    layer: "Snowflake Layer 1"
+    type: ROW_NUMBER_SELECTION
+    description: "ROW_NUMBER OVER (PARTITION BY PREMISE_ID ORDER BY INSTALL_DATE DESC, METER_ID DESC) rn=1"
+    filter: "ACTIVE_FLAG='Y' AND (REMOVAL_DATE IS NULL OR REMOVAL_DATE >= CURRENT_DATE())"
+
+  - rule_id: TR-COMB-01
+    name: CombinedAccountStatusDeriver
+    layer: "Snowflake Layer 1"
+    type: CASE_DERIVATION
+    description: "Multi-condition CASE across CUSTOMER.ACCOUNT_STATUS, ENERGY_ACCOUNT.ACCOUNT_STATUS, DELETED_FLAG values. Priority: CLOSED > INACTIVE > PENDING > ACTIVE"
+    sources: ["c.ACCOUNT_STATUS", "ea.ACCOUNT_STATUS", "c.DELETED_FLAG", "ea.DELETED_FLAG", "ea.END_DATE"]
+
+  - rule_id: TR-COND-01
+    name: MultiSourceIsActiveDeriver
+    layer: "Snowflake Layer 1"
+    type: CASE_DERIVATION
+    description: "1 if no deleted/closed/inactive/end-dated condition; else 0"
+    sources: ["c.DELETED_FLAG", "ea.DELETED_FLAG", "ea.END_DATE", "c.ACCOUNT_STATUS", "ea.ACCOUNT_STATUS"]
+
+  - rule_id: TR-ADDR-01
+    name: FormattedMailingAddressAssembler
+    layer: "Snowflake Layer 1"
+    type: CONCATENATION
+    description: "Null-guarded concatenation of ADDRESS_LINE1/2, CITY, STATE_CODE, ZIP_CODE"
+
+  - rule_id: TR-TS-GREATEST-01
+    name: RecordEffectiveTsDeriver
+    layer: "Snowflake Layer 1"
+    type: AGGREGATE_FUNCTION
+    description: "GREATEST of all contributing UPDATED_AT values, with COALESCE null protection"
+    sources: ["c.UPDATED_AT", "cc.UPDATED_AT", "ea.UPDATED_AT", "ba.UPDATED_AT", "sp.UPDATED_AT", "m.UPDATED_AT"]
+
+  - rule_id: TR-BILL-01
+    name: AdjustedKwhCalculator
+    layer: "Snowflake Layer 1"
+    type: CALCULATION
+    expression: "ROUND((CURR_METER_READING - PREV_METER_READING) * METER_MULTIPLIER, 6)"
+    rounding_rule: "ROUND(x, 6) HALF_UP (Snowflake default)"
+
+  - rule_id: TR-BILL-02
+    name: FixedChargeExtractor
+    layer: "Snowflake Layer 1"
+    type: REFERENCE_LOOKUP
+    expression: "ROUND(COALESCE(rp.FIXED_CHARGE_RATE, 0), 2)"
+    rounding_rule: "ROUND(x, 2)"
+
+  - rule_id: TR-BILL-03
+    name: EnergyChargeCalculator
+    layer: "Snowflake Layer 1"
+    type: CALCULATION
+    expression: "ROUND(KWH_USAGE * COALESCE(rp.ENERGY_RATE_PER_KWH, 0), 2)"
+    rounding_rule: "ROUND(x, 2)"
+
+  - rule_id: TR-BILL-04
+    name: DemandChargeCalculator
+    layer: "Snowflake Layer 1"
+    type: CALCULATION
+    expression: "ROUND(COALESCE(PEAK_DEMAND_KW, 0) * COALESCE(rp.DEMAND_RATE_PER_KW, 0), 2)"
+    rounding_rule: "ROUND(x, 2)"
+
+  - rule_id: TR-BILL-05
+    name: SubtotalCalculator
+    layer: "Snowflake Layer 1"
+    type: CALCULATION
+    expression: "ROUND(FIXED_CHARGE + ENERGY_CHARGE_CALC + DEMAND_CHARGE_CALC, 2)"
+    rounding_rule: "ROUND(x, 2)"
+
+  - rule_id: TR-BILL-06
+    name: TaxCalculator
+    layer: "Snowflake Layer 1"
+    type: CALCULATION
+    expression: "ROUND(SUBTOTAL_CALC * COALESCE(rp.TAX_RATE, 0), 2)"
+    rounding_rule: "ROUND(x, 2)"
+
+  - rule_id: TR-BILL-07
+    name: TotalBilledCalculator
+    layer: "Snowflake Layer 1"
+    type: CALCULATION
+    expression: "ROUND(SUBTOTAL_CALC + TAX_AMOUNT_CALC, 2)"
+    rounding_rule: "ROUND(x, 2) — additive form ensures TOTAL = SUBTOTAL + TAX exactly"
+
+  - rule_id: TR-01
+    name: YNToIntFlag
+    layer: "Spring Batch Layer 2"
+    java_class: "com.cdp.loader.transform.FlagTransformer"
+    java_method: "ynToInt"
+
+  - rule_id: TR-02
+    name: TitleCaseNormalizer
+    layer: "Spring Batch Layer 2"
+    java_class: "com.cdp.loader.transform.NameTransformer"
+    java_method: "toTitleCase"
+
+  - rule_id: TR-03
+    name: FullNameDeriver
+    layer: "Spring Batch Layer 2"
+    java_class: "com.cdp.loader.transform.NameTransformer"
+    java_method: "deriveFullName"
+
+  - rule_id: TR-05
+    name: AccountStatusTranslator
+    layer: "Spring Batch Layer 2"
+    java_class: "com.cdp.loader.transform.StatusTransformer"
+    java_method: "translateAccountStatus"
+
+  - rule_id: TR-06
+    name: EmailNormalizer
+    layer: "Spring Batch Layer 2"
+    java_class: "com.cdp.loader.transform.ContactTransformer"
+    java_method: "normalizeEmail"
+
+  - rule_id: TR-07
+    name: PhoneNormalizer
+    layer: "Spring Batch Layer 2"
+    java_class: "com.cdp.loader.transform.ContactTransformer"
+    java_method: "normalizePhone"
+
+  - rule_id: TR-FK-01
+    name: SourceToTargetFkResolver
+    layer: "Spring Batch Layer 2"
+    java_class: "com.cdp.loader.fk.FkResolutionService"
+    java_method: "resolve"
+
+validation_rules:
+  - rule_id: VR-EMAIL-001
+    name: EmailFormat
+    description: "If present, must match simplified RFC 5322 pattern"
+    error_code: VAL-EMAIL-001
+    action: WARN_AND_NULL
+
+  - rule_id: VR-PHONE-001
+    name: PhoneFormat
+    description: "If present, must resolve to valid 10-digit US number"
+    error_code: VAL-PHONE-001
+    action: WARN_AND_NULL
+
+  - rule_id: VR-FK-001
+    name: FkParentExists
+    description: "Source parent ID must resolve to a target ID in FK cache"
+    error_code: VAL-FK-001
+    action: REJECT
+
+  - rule_id: VR-USAGE-005
+    name: KwhNonNegative
+    description: "KWH_USAGE must be >= 0"
+    error_code: VAL-USAGE-005
+    action: REJECT
+
+  - rule_id: VR-USAGE-011
+    name: BillTotalConsistency
+    description: "abs(SOURCE_TOTAL_BILLED - TOTAL_BILLED_CALC) <= 0.01"
+    error_code: VAL-USAGE-011
+    action: WARN_AND_RECORD_VARIANCE

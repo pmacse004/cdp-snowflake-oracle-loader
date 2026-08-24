@@ -1,0 +1,332 @@
+# =============================================================================
+# ICA/MCP Context — Transformation Rules
+# =============================================================================
+# Documents every data transformation applied between Snowflake source and
+# Oracle target.  Two transformation layers:
+#   Layer 1 (Snowflake view)  — computed in SQL, arrives pre-transformed
+#   Layer 2 (Spring Batch)    — applied in Java processor before Oracle MERGE
+#
+# Rule IDs match the ICA mapping catalogue and Java processor comments.
+# =============================================================================
+
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+artifact: transformation-rules
+
+categories:
+
+  # --------------------------------------------------------------------------
+  # TR-COMB-*  Combined / derived text fields
+  # --------------------------------------------------------------------------
+  - category: TR-COMB
+    name: Combined text fields
+    rules:
+
+      - id: TR-COMB-01
+        name: FULL_NAME_NORMALIZED
+        layer: Layer 1 (Snowflake view)
+        applies_to: VW_DAILY_CUSTOMER_EXPORT, VW_DAILY_CUSTOMER_ACCOUNT_EXPORT
+        formula: >
+          TRIM(UPPER(FIRST_NAME) || ' ' ||
+               COALESCE(UPPER(MIDDLE_NAME) || ' ', '') ||
+               UPPER(LAST_NAME))
+        java_field: CustomerRecord.fullNameNormalized
+        oracle_target: TGT_CUSTOMER.FULL_NAME_NORMALIZED
+        notes: >
+          Middle name is optional; when null the COALESCE produces empty string,
+          so the result never contains double-spaces before last name.
+          TRIM removes any trailing whitespace.
+          Java processor validates result is not blank (VR-CUST-002).
+
+      - id: TR-COMB-02
+        name: FULL_ADDRESS
+        layer: Layer 1 (Snowflake view)
+        applies_to: VW_DAILY_CUSTOMER_ACCOUNT_EXPORT
+        formula: >
+          TRIM(ADDRESS_LINE1 ||
+               COALESCE(', ' || ADDRESS_LINE2, '') || ', ' ||
+               CITY || ', ' || STATE_CODE || ' ' || ZIP_CODE)
+        java_field: CustomerAccountRecord.fullAddress
+        oracle_target: TGT_PREMISE.FULL_ADDRESS
+        notes: >
+          ADDRESS_LINE2 is optional.
+          Result is passed through from view; Java does not recompute.
+
+  # --------------------------------------------------------------------------
+  # TR-TYPE-*  Type mapping between Snowflake and Java/Oracle
+  # --------------------------------------------------------------------------
+  - category: TR-TYPE
+    name: Type mapping
+    rules:
+
+      - id: TR-TYPE-01
+        name: BOOLEAN to NUMBER(1,0)
+        layer: Layer 2 (Java processor)
+        applies_to:
+          - CUSTOMER.AUTO_PAY_ENROLLED → TGT_BILLING_ACCOUNT.AUTO_PAY_ENROLLED
+          - CUSTOMER.PAPERLESS_ENROLLED → TGT_BILLING_ACCOUNT.PAPERLESS_ENROLLED
+          - CUSTOMER.IS_PRIMARY → TGT_CUSTOMER_CONTACT.IS_PRIMARY
+          - CUSTOMER.IS_VERIFIED → TGT_CUSTOMER_CONTACT.IS_VERIFIED
+          - BILLING.IS_CORRECTION → TGT_MONTHLY_USAGE.IS_CORRECTION
+        formula: "true → 1, false → 0"
+        notes: >
+          Snowflake BOOLEAN columns arrive as Java boolean.
+          Oracle stores NUMBER(1,0) with CHECK IN (0,1).
+
+      - id: TR-TYPE-02
+        name: TIMESTAMP_TZ to java.sql.Timestamp (UTC)
+        layer: Layer 2 (Java processor)
+        applies_to:
+          - All UPDATED_AT / CREATED_AT Snowflake TIMESTAMP_TZ columns
+          - RECORD_EFFECTIVE_TS composite watermark
+        formula: >
+          OffsetDateTime (or ZonedDateTime) read from JDBC.
+          Converted to java.sql.Timestamp via Timestamp.from(odt.toInstant()).
+          Oracle TIMESTAMP column stores UTC implicitly.
+        notes: >
+          Never store timezone offset in Oracle TIMESTAMP — always normalize to UTC.
+          Use OffsetDateTime.withOffsetSameInstant(ZoneOffset.UTC) before conversion.
+
+      - id: TR-TYPE-03
+        name: DATE to java.sql.Date (LocalDate)
+        layer: Layer 2 (Java processor)
+        applies_to:
+          - OPEN_DATE, CLOSE_DATE, BILL_START_DATE, BILL_END_DATE
+          - INSTALL_DATE, EFFECTIVE_DATE, END_DATE
+          - DATE_OF_BIRTH (excluded from export views)
+        formula: "LocalDate → java.sql.Date.valueOf(localDate)"
+        notes: Pure calendar date — no timezone conversion needed.
+
+      - id: TR-TYPE-04
+        name: NUMBER(12,3) / NUMBER(10,2) to BigDecimal
+        layer: Layer 2 (Java processor)
+        applies_to:
+          - KWH_USAGE, KWH_EFFECTIVE, PEAK_DEMAND_KW
+          - FIXED_CHARGE, ENERGY_CHARGE, DEMAND_CHARGE
+          - SUBTOTAL_CHARGE, TAX_AMOUNT, TOTAL_BILLED
+          - GEO_LATITUDE, GEO_LONGITUDE
+        formula: "ResultSet.getBigDecimal(columnName) — preserves scale"
+        notes: >
+          Use BigDecimal throughout; never use double/float for money or usage values.
+          RoundingMode.HALF_UP where explicit rounding is applied (see TR-BILL-*).
+
+  # --------------------------------------------------------------------------
+  # TR-BILL-*  Billing charge calculations (Layer 1 — Snowflake view)
+  # --------------------------------------------------------------------------
+  - category: TR-BILL
+    name: Billing charge calculations
+    notes: >
+      All calculations performed in VW_MONTHLY_USAGE_BILLING_EXPORT.
+      Java processor receives pre-computed values and validates them;
+      does NOT recompute charges from raw rates.
+      NULL propagation: a NULL rate produces a NULL calculated charge
+      (except demand per MU-AC-09).
+    rules:
+
+      - id: TR-BILL-01
+        name: Rate parameter extraction from VARIANT
+        layer: Layer 1 (Snowflake view)
+        formula: >
+          TRY_TO_DECIMAL(ATTRIBUTES[key]::STRING, precision, scale)
+          where ATTRIBUTES is REF.CODE_VALUE.ATTRIBUTES (VARIANT column).
+          Key missing or JSON null → NULL (not an error at view layer).
+        rate_keys:
+          - key: fixed         → FIXED_RATE         NUMBER(10,2)
+          - key: energy        → ENERGY_RATE_PER_KWH NUMBER(10,6)
+          - key: demand        → DEMAND_RATE_PER_KW  NUMBER(10,6)
+          - key: tax           → TAX_RATE            NUMBER(10,6)
+        notes: >
+          ATTRIBUTES['key']::STRING extracts VARIANT field as STRING.
+          TRY_TO_DECIMAL handles NULL, quoted numbers, JSON nulls — never errors.
+
+      - id: TR-BILL-02
+        name: Fixed charge
+        layer: Layer 1 (Snowflake view)
+        formula: "CALC_FIXED_CHARGE = FIXED_RATE  (direct pass-through of rate)"
+        null_if: FIXED_RATE IS NULL
+        oracle_target: TGT_MONTHLY_USAGE.FIXED_CHARGE
+        notes: Spring Batch rejects record if CALC_FIXED_CHARGE is NULL (VR-RATE-001).
+
+      - id: TR-BILL-03
+        name: Energy charge
+        layer: Layer 1 (Snowflake view)
+        formula: "CALC_ENERGY_CHARGE = ROUND(KWH_USAGE × ENERGY_RATE_PER_KWH, 2)"
+        null_if: ENERGY_RATE_PER_KWH IS NULL
+        oracle_target: TGT_MONTHLY_USAGE.ENERGY_CHARGE
+
+      - id: TR-BILL-04
+        name: Demand charge (ICA MU-AC-09)
+        layer: Layer 1 (Snowflake view)
+        formula: >
+          CASE WHEN PEAK_DEMAND_KW IS NOT NULL AND DEMAND_RATE_PER_KW IS NOT NULL
+               THEN ROUND(PEAK_DEMAND_KW × DEMAND_RATE_PER_KW, 2)
+               ELSE 0
+          END
+        null_if: never (explicit 0 when demand rate absent — ICA MU-AC-09)
+        oracle_target: TGT_MONTHLY_USAGE.DEMAND_CHARGE
+        notes: >
+          ICA MU-AC-09: NULL demand rate means the rate plan has no demand component.
+          This is not a data error — the charge is defined as 0, not NULL.
+
+      - id: TR-BILL-05
+        name: Subtotal charge
+        layer: Layer 1 (Snowflake view)
+        formula: "CALC_SUBTOTAL = FIXED + ENERGY + DEMAND"
+        null_if: "FIXED IS NULL OR ENERGY IS NULL  (NULL propagates from addends)"
+        oracle_target: TGT_MONTHLY_USAGE.SUBTOTAL_CHARGE
+
+      - id: TR-BILL-06
+        name: Tax amount
+        layer: Layer 1 (Snowflake view)
+        formula: "CALC_TAX_AMOUNT = ROUND(CALC_SUBTOTAL × TAX_RATE, 2)"
+        null_if: "TAX_RATE IS NULL OR CALC_SUBTOTAL IS NULL"
+        oracle_target: TGT_MONTHLY_USAGE.TAX_AMOUNT
+
+      - id: TR-BILL-07
+        name: Total billed
+        layer: Layer 1 (Snowflake view)
+        formula: "CALC_TOTAL_BILLED = CALC_SUBTOTAL + CALC_TAX_AMOUNT"
+        null_if: "CALC_SUBTOTAL IS NULL OR CALC_TAX_AMOUNT IS NULL"
+        oracle_target: TGT_MONTHLY_USAGE.TOTAL_BILLED
+        notes: >
+          Additive form: TOTAL = SUBTOTAL + TAX.
+          NOT multiplicative (never multiply subtotal by (1 + tax_rate) directly).
+
+  # --------------------------------------------------------------------------
+  # TR-FLAG-*  Derived boolean/flag fields
+  # --------------------------------------------------------------------------
+  - category: TR-FLAG
+    name: Derived flags
+    rules:
+
+      - id: TR-FLAG-01
+        name: IS_ACTIVE (Customer)
+        layer: Layer 1 (Snowflake view) + Layer 2 (Java inversion)
+        view_formula: "IS_INACTIVE = CASE WHEN ACCOUNT_STATUS = 'INACTIVE' THEN TRUE ELSE FALSE END"
+        java_formula: "IS_ACTIVE = isInactive ? 0 : 1"
+        oracle_target: TGT_CUSTOMER.IS_ACTIVE
+        notes: >
+          View produces IS_INACTIVE (boolean); Java inverts to IS_ACTIVE (0/1).
+          Oracle CHECK constraint: IS_ACTIVE IN (0,1).
+
+      - id: TR-FLAG-02
+        name: IS_ACTIVE (Energy Account)
+        layer: Layer 2 (Java processor)
+        java_formula: "IS_ACTIVE = (closeDate == null) ? 1 : 0"
+        oracle_target: TGT_ENERGY_ACCOUNT.IS_ACTIVE
+        notes: Active if no close date.
+
+      - id: TR-FLAG-03
+        name: IS_CORRECTION (Monthly Usage)
+        layer: Layer 2 (Java processor)
+        java_formula: "IS_CORRECTION = isCorrection ? 1 : 0"
+        oracle_target: TGT_MONTHLY_USAGE.IS_CORRECTION
+
+      - id: TR-FLAG-04
+        name: USAGE_QUALITY_STATUS
+        layer: Layer 1 (Snowflake view)
+        formula: >
+          CASE WHEN READ_TYPE = 'ESTIMATED'   THEN 'ESTIMATED'
+               WHEN IS_CORRECTION = TRUE      THEN 'CORRECTED'
+               ELSE 'ACTUAL'
+          END
+        oracle_target: TGT_MONTHLY_USAGE.USAGE_QUALITY_STATUS
+        notes: >
+          Oracle CHECK: IN ('ACTUAL','ESTIMATED','CORRECTED').
+          Java validates (VR-USG-012).
+
+  # --------------------------------------------------------------------------
+  # TR-AUDIT-*  Audit / ETL metadata columns
+  # --------------------------------------------------------------------------
+  - category: TR-AUDIT
+    name: Audit and ETL metadata
+    rules:
+
+      - id: TR-AUDIT-01
+        name: ETL_RUN_ID
+        layer: Layer 2 (Java writer)
+        source: "Spring Batch JobExecution ID (long)"
+        oracle_target: "All TGT_* tables — ETL_RUN_ID column"
+        notes: Set on every INSERT and UPDATE in MERGE.
+
+      - id: TR-AUDIT-02
+        name: CREATED_AT (Oracle)
+        layer: Layer 2 (Oracle MERGE)
+        source: Oracle SYS_EXTRACT_UTC(SYSTIMESTAMP) at INSERT time
+        oracle_target: "All TGT_* tables — CREATED_AT column"
+        notes: >
+          Oracle DEFAULT handles initial INSERT.
+          MERGE UPDATE clause must NOT include CREATED_AT in the SET list —
+          it must be preserved from the original insert.
+
+      - id: TR-AUDIT-03
+        name: UPDATED_AT (Oracle)
+        layer: Layer 2 (Oracle MERGE)
+        source: "SYS_EXTRACT_UTC(SYSTIMESTAMP) at time of MERGE execution"
+        oracle_target: "All TGT_* tables — UPDATED_AT column"
+        notes: Set only in the WHEN MATCHED THEN UPDATE clause.
+
+      - id: TR-AUDIT-04
+        name: ETL_LOAD_TS
+        layer: Oracle DEFAULT
+        source: "Oracle DEFAULT SYS_EXTRACT_UTC(SYSTIMESTAMP)"
+        oracle_target: "All TGT_* tables — ETL_LOAD_TS column"
+        notes: >
+          Set by Oracle on every INSERT via DEFAULT expression.
+          Application does not explicitly set this column.
+
+      - id: TR-AUDIT-05
+        name: SOURCE_UPDATED_AT
+        layer: Layer 2 (Java writer)
+        source: >
+          Customer: CUSTOMER.UPDATED_AT
+          Account:  RECORD_EFFECTIVE_TS (composite watermark from view)
+          Usage:    BILLING.MONTHLY_USAGE.UPDATED_AT
+        oracle_target: "TGT_CUSTOMER, TGT_ENERGY_ACCOUNT, TGT_MONTHLY_USAGE — SOURCE_UPDATED_AT"
+        notes: >
+          Stored for traceability — allows Oracle-side queries to identify
+          when the source record was last modified in Snowflake.
+
+  # --------------------------------------------------------------------------
+  # TR-NULL-*  NULL handling / coalesce rules
+  # --------------------------------------------------------------------------
+  - category: TR-NULL
+    name: NULL handling
+    rules:
+
+      - id: TR-NULL-01
+        name: KWH_EFFECTIVE
+        layer: Layer 1 (Snowflake view)
+        formula: "KWH_EFFECTIVE = COALESCE(KWH_ADJUSTED, KWH_USAGE)"
+        notes: >
+          KWH_ADJUSTED is the loss-factor-adjusted value.
+          When absent, use raw KWH_USAGE as the effective consumption basis.
+          Oracle column NOT NULL (guaranteed non-null by COALESCE).
+
+      - id: TR-NULL-02
+        name: PREFERRED_LANGUAGE default
+        layer: Layer 2 (Java processor)
+        formula: "COALESCE(preferredLanguage, 'EN')"
+        oracle_target: TGT_CUSTOMER.PREFERRED_LANGUAGE
+        notes: Oracle column DEFAULT 'EN' NOT NULL; apply Java default for safety.
+
+      - id: TR-NULL-03
+        name: SERVICE_TYPE default
+        layer: Layer 2 (Java processor)
+        formula: "COALESCE(serviceType, 'ELECTRIC')"
+        oracle_target: TGT_ENERGY_ACCOUNT.SERVICE_TYPE
+        notes: Oracle DEFAULT 'ELECTRIC' NOT NULL; apply Java default for safety.
+
+      - id: TR-NULL-04
+        name: METER_TYPE default
+        layer: Layer 2 (Java processor)
+        formula: "COALESCE(meterType, 'ANALOG')"
+        oracle_target: TGT_METER.METER_TYPE
+        notes: Oracle DEFAULT 'ANALOG' NOT NULL; apply Java default for safety.
+
+      - id: TR-NULL-05
+        name: READ_TYPE default
+        layer: Layer 2 (Java processor)
+        formula: "COALESCE(readType, 'ACTUAL')"
+        oracle_target: TGT_MONTHLY_USAGE.READ_TYPE
+        notes: Oracle DEFAULT 'ACTUAL' NOT NULL; apply Java default for safety.

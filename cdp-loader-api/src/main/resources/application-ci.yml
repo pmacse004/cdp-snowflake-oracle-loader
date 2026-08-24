@@ -1,0 +1,57 @@
+# =============================================================================
+# CDP Loader — CI / Test Profile
+# =============================================================================
+# Used during Maven unit tests only (no live Snowflake or Oracle connection).
+# All datasources are mocked / replaced.
+# =============================================================================
+
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: none
+
+  flyway:
+    enabled: false
+
+  batch:
+    jdbc:
+      initialize-schema: never
+    job:
+      enabled: false
+
+cdp:
+  snowflake:
+    account:          "test-account-ci"
+    user:             "test-user-ci"
+    role:             "test-role-ci"
+    warehouse:        "test-wh-ci"
+    database:         "test-db-ci"
+    private-key-path: "classpath:test-keys/dummy_rsa_key.p8"
+    # Points at the test-classpath copy of the config file (resolved to
+    # an absolute filesystem path in DataSourceSmokeIT when needed).
+    client-config-file: "classpath:config/sf_client_config.json"
+    pool:
+      min-connections: 1
+      max-connections: 2
+      login-timeout:   10
+
+  oracle:
+    schema: CDP_LOADER
+
+  batch:
+    chunk-size: 10
+    fatal-error-threshold: 5
+    fetch-size: 100
+
+  reconciliation:
+    count-tolerance-pct:   0.0
+    kwh-tolerance-pct:     0.001
+    amount-tolerance-pct:  0.001
+
+  mapping-catalogue:
+    location: "classpath:ica/mapping-catalogue.yaml"
+
+logging:
+  level:
+    com.ibm.cdp: DEBUG
+    org.springframework.batch: DEBUG

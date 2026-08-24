@@ -1,0 +1,200 @@
+# =============================================================================
+# ICA/MCP Context — Error Handling Rules
+# =============================================================================
+# Defines how ETL errors are classified, recorded, and surfaced.
+# Implementation: EtlRecordErrorRepository.java + ETL_RECORD_ERROR table (V003)
+# =============================================================================
+
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+artifact: error-handling-rules
+
+# ============================================================================
+# Error classification
+# ============================================================================
+error_classes:
+
+  - class: VALIDATION_ERROR
+    description: Record-level data quality failure detected in Spring Batch processor.
+    exception: com.ibm.cdp.loader.core.exception.RecordValidationException
+    spring_batch_handling: Skip — record written to ETL_RECORD_ERROR; job continues.
+    examples:
+      - Missing CUSTOMER_ID (VR-CUST-001)
+      - Invalid CUSTOMER_TYPE (VR-CUST-003)
+      - Negative KWH_USAGE (VR-USG-008) — intentional USG-INVK-*
+      - BILL_END_DATE < BILL_START_DATE (VR-USG-006) — intentional USG-INVD-*
+      - NULL calculated charges (VR-RATE-001)
+
+  - class: INFRASTRUCTURE_ERROR
+    description: Database connectivity, configuration, or unexpected system error.
+    exception: java.sql.SQLException, net.snowflake.client.jdbc.SnowflakeSQLException (non-transient)
+    spring_batch_handling: Fail — job transitions to FAILED; no skip.
+    examples:
+      - Snowflake connection refused (key auth failure)
+      - Oracle ORA-03113 (connection lost mid-batch)
+      - Missing required configuration property
+
+  - class: TRANSIENT_ERROR
+    description: Temporary connectivity issue that may succeed on retry.
+    exception: java.sql.SQLTransientConnectionException
+    spring_batch_handling: Retry up to 3 times with exponential backoff; then FAIL.
+
+  - class: FK_VIOLATION
+    description: Oracle FK constraint violation (ORA-02291) — parent record not found.
+    exception: java.sql.SQLIntegrityConstraintViolationException
+    spring_batch_handling: >
+      ORA-02291 for a known FK (e.g. CUSTOMER_ID missing from TGT_CUSTOMER) is treated
+      as a VALIDATION_ERROR — skip and record.
+      Unexpected FK violations (system data inconsistency) are INFRASTRUCTURE_ERROR.
+
+# ============================================================================
+# ETL_RECORD_ERROR table schema (V003 migration)
+# ============================================================================
+error_table: ETL_RECORD_ERROR
+columns:
+  - ERROR_ID:        NUMBER(19,0)   NOT NULL PK (sequence)
+  - RUN_ID:          NUMBER(19,0)   NOT NULL  — FK to ETL_JOB_RUN
+  - JOB_NAME:        VARCHAR2(100)  NOT NULL  — e.g. INITIAL_LOAD_JOB
+  - SOURCE_ENTITY:   VARCHAR2(100)  NOT NULL  — e.g. CUSTOMER, ENERGY_ACCOUNT, MONTHLY_USAGE
+  - SOURCE_RECORD_ID: VARCHAR2(200) NOT NULL  — the primary key of the rejected record
+  - ERROR_CODE:      VARCHAR2(100)  NOT NULL  — e.g. VAL_USAGE_NEGATIVE_KWH
+  - ERROR_MESSAGE:   VARCHAR2(4000)           — human-readable description
+  - SOURCE_EXCERPT:  VARCHAR2(4000)           — safe excerpt of source data (no PII/secrets)
+  - CREATED_AT:      TIMESTAMP      NOT NULL  — UTC timestamp of error recording
+
+# ============================================================================
+# What must NOT be stored in ETL_RECORD_ERROR
+# ============================================================================
+prohibited_content:
+  - Private keys or key material
+  - Oracle/Snowflake passwords
+  - Authentication tokens
+  - Full SSN or date-of-birth values
+  - Full contact details in free-text fields
+  rule: >
+    SOURCE_EXCERPT must contain only safe diagnostic information:
+    the primary key, offending column name, and the rejected value
+    (not the full record).  Truncate to 4000 chars.
+    Do not log SSN_LAST4 or DATE_OF_BIRTH even if they arrive in the record.
+
+# ============================================================================
+# Error codes catalogue
+# ============================================================================
+error_codes:
+
+  # Customer errors
+  - code: VAL_CUSTOMER_MISSING_ID
+    entity: CUSTOMER
+    rule: VR-CUST-001
+  - code: VAL_CUSTOMER_MISSING_NAME
+    entity: CUSTOMER
+    rule: VR-CUST-002
+  - code: VAL_CUSTOMER_INVALID_TYPE
+    entity: CUSTOMER
+    rule: VR-CUST-003
+  - code: VAL_CUSTOMER_INVALID_STATUS
+    entity: CUSTOMER
+    rule: VR-CUST-004
+
+  # Energy account errors
+  - code: VAL_ACCOUNT_MISSING_ID
+    entity: ENERGY_ACCOUNT
+    rule: VR-EA-001
+  - code: VAL_ACCOUNT_MISSING_CUSTOMER_ID
+    entity: ENERGY_ACCOUNT
+    rule: VR-EA-002
+  - code: VAL_ACCOUNT_MISSING_ACCOUNT_NUMBER
+    entity: ENERGY_ACCOUNT
+    rule: VR-EA-003
+  - code: VAL_ACCOUNT_INVALID_STATUS
+    entity: ENERGY_ACCOUNT
+    rule: VR-EA-004
+  - code: VAL_ACCOUNT_MISSING_RATE_CLASS
+    entity: ENERGY_ACCOUNT
+    rule: VR-EA-005
+  - code: VAL_ACCOUNT_MISSING_OPEN_DATE
+    entity: ENERGY_ACCOUNT
+    rule: VR-EA-006
+
+  # Monthly usage errors
+  - code: VAL_USAGE_MISSING_ID
+    entity: MONTHLY_USAGE
+    rule: VR-USG-001
+  - code: VAL_USAGE_MISSING_ACCOUNT_ID
+    entity: MONTHLY_USAGE
+    rule: VR-USG-002
+  - code: VAL_USAGE_MISSING_PREMISE_ID
+    entity: MONTHLY_USAGE
+    rule: VR-USG-003
+  - code: VAL_USAGE_MISSING_METER_ID
+    entity: MONTHLY_USAGE
+    rule: VR-USG-004
+  - code: VAL_USAGE_MISSING_BILLING_MONTH
+    entity: MONTHLY_USAGE
+    rule: VR-USG-005
+  - code: VAL_USAGE_INVALID_BILLING_MONTH
+    entity: MONTHLY_USAGE
+    rule: VR-USG-005
+  - code: VAL_USAGE_MISSING_DATES
+    entity: MONTHLY_USAGE
+    rule: VR-USG-006
+  - code: VAL_USAGE_DATE_RANGE
+    entity: MONTHLY_USAGE
+    rule: VR-USG-006
+    intentional_source: "USG-INVD-* rows"
+  - code: VAL_USAGE_INVALID_BILLING_DAYS
+    entity: MONTHLY_USAGE
+    rule: VR-USG-007
+  - code: VAL_USAGE_MISSING_KWH
+    entity: MONTHLY_USAGE
+    rule: VR-USG-008
+  - code: VAL_USAGE_NEGATIVE_KWH
+    entity: MONTHLY_USAGE
+    rule: VR-USG-008
+    intentional_source: "USG-INVK-* rows"
+  - code: VAL_USAGE_NEGATIVE_DEMAND
+    entity: MONTHLY_USAGE
+    rule: VR-USG-009
+  - code: VAL_USAGE_MISSING_RATE_PLAN
+    entity: MONTHLY_USAGE
+    rule: VR-USG-010
+  - code: VAL_USAGE_MISSING_CHARGES
+    entity: MONTHLY_USAGE
+    rule: VR-RATE-001
+  - code: VAL_USAGE_NEGATIVE_TOTAL
+    entity: MONTHLY_USAGE
+    rule: VR-USG-011
+  - code: VAL_USAGE_INVALID_QUALITY_STATUS
+    entity: MONTHLY_USAGE
+    rule: VR-USG-012
+
+# ============================================================================
+# ETL_JOB_RUN status transitions
+# ============================================================================
+status_transitions:
+  valid:
+    - STARTING → RUNNING
+    - RUNNING → COMPLETED
+    - RUNNING → COMPLETED_WITH_ERRORS
+    - RUNNING → FAILED
+  invalid:
+    - COMPLETED → any other state (terminal)
+    - FAILED → any other state (terminal)
+  rule: >
+    COMPLETED must NOT be set when the job encountered fatal errors.
+    COMPLETED_WITH_ERRORS is appropriate when some records were skipped
+    (SKIP disposition) but the job otherwise processed successfully.
+    FAILED is set when a fatal infrastructure or configuration error aborts the job.
+
+# ============================================================================
+# API error surfacing
+# ============================================================================
+api_rules:
+  - Never return stack traces in HTTP responses.
+  - Never return JDBC URL containing credentials.
+  - Never return private key file paths.
+  - Error summary in POST /jobs/* response body: HTTP 500 with generic message.
+  - Detailed errors: GET /errors?runId=X (paginated ETL_RECORD_ERROR query).
+  - HTTP 409 Conflict: another job of the same type is RUNNING.
+  - HTTP 400: invalid request (e.g. malformed job name).
+  - HTTP 503: datasource connectivity check failed (health endpoint).

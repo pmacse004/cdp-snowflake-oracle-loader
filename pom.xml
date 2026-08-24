@@ -1,0 +1,269 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- ===================================================================
+         Root / Parent POM
+         CDP Snowflake-to-Oracle Loader
+         =================================================================== -->
+    <groupId>com.ibm.cdp</groupId>
+    <artifactId>cdp-snowflake-oracle-loader</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>CDP Snowflake Oracle Loader — Parent</name>
+    <description>
+        Demonstration ETL pipeline: reads synthetic US electric utility data from
+        Snowflake and incrementally loads it into Oracle using Spring Batch.
+    </description>
+
+    <!-- ===================================================================
+         Modules
+         =================================================================== -->
+    <modules>
+        <module>cdp-loader-core</module>
+        <module>cdp-loader-batch</module>
+        <module>cdp-loader-api</module>
+    </modules>
+
+    <!-- ===================================================================
+         Inherit Spring Boot dependency management without inheriting the
+         Spring Boot parent POM (allows enterprise parent override later).
+         =================================================================== -->
+    <dependencyManagement>
+        <dependencies>
+
+            <!--
+                 FLYWAY VERSION OVERRIDES
+                 Must appear before the Spring Boot BOM import.
+                 Spring Boot 3.2.x pins flyway-core at 9.22.3.
+                 Placing these entries first in dependencyManagement gives them
+                 higher precedence than the BOM-managed version so that every
+                 module in this reactor resolves Flyway at ${flyway.version}
+                 (10.12.0), which supports Oracle via flyway-database-oracle.
+            -->
+            <dependency>
+                <groupId>org.flywaydb</groupId>
+                <artifactId>flyway-core</artifactId>
+                <version>${flyway.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.flywaydb</groupId>
+                <artifactId>flyway-database-oracle</artifactId>
+                <version>${flyway.version}</version>
+            </dependency>
+
+            <!--
+                 OJDBC VERSION OVERRIDE
+                 Must appear before the Spring Boot BOM import.
+                 Spring Boot 3.2.x BOM pins ojdbc11 at 21.9.0.0.
+                 This override ensures all modules use ojdbc11 23.4.0.24.05,
+                 which is required for Oracle 23ai Free 23.7 compatibility.
+            -->
+            <dependency>
+                <groupId>com.oracle.database.jdbc</groupId>
+                <artifactId>ojdbc11</artifactId>
+                <version>${ojdbc11.version}</version>
+            </dependency>
+
+            <!-- Spring Boot BOM — imported AFTER the version overrides above -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+        </dependencies>
+    </dependencyManagement>
+
+    <!-- ===================================================================
+         Properties — all version pins in one place
+         =================================================================== -->
+    <properties>
+        <!-- Java -->
+        <java.version>17</java.version>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!-- Spring -->
+        <spring-boot.version>3.2.5</spring-boot.version>
+
+        <!-- JDBC drivers -->
+        <snowflake-jdbc.version>3.15.1</snowflake-jdbc.version>
+        <ojdbc11.version>23.4.0.24.05</ojdbc11.version>
+
+        <!-- Flyway -->
+        <flyway.version>10.12.0</flyway.version>
+
+        <!-- Mapping / JSON -->
+        <mapstruct.version>1.5.5.Final</mapstruct.version>
+        <jackson.version>2.17.1</jackson.version>
+
+        <!-- Testing -->
+        <testcontainers.version>1.19.8</testcontainers.version>
+        <mockito.version>5.11.0</mockito.version>
+
+        <!-- Build plugins -->
+        <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
+        <maven-surefire-plugin.version>3.2.5</maven-surefire-plugin.version>
+        <maven-failsafe-plugin.version>3.2.5</maven-failsafe-plugin.version>
+        <jacoco-plugin.version>0.8.12</jacoco-plugin.version>
+    </properties>
+
+    <!-- ===================================================================
+         Common dependencies — inherited by all modules
+         =================================================================== -->
+    <dependencies>
+        <!-- Lombok — annotation processing -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Common test dependencies -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>${mockito.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <!-- ===================================================================
+         Build
+         =================================================================== -->
+    <build>
+        <pluginManagement>
+            <plugins>
+                <!-- Compiler with annotation processing for Lombok + MapStruct -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>${maven-compiler-plugin.version}</version>
+                    <configuration>
+                        <source>${java.version}</source>
+                        <target>${java.version}</target>
+                        <annotationProcessorPaths>
+                            <path>
+                                <groupId>org.projectlombok</groupId>
+                                <artifactId>lombok</artifactId>
+                                <version>${lombok.version}</version>
+                            </path>
+                            <path>
+                                <groupId>org.mapstruct</groupId>
+                                <artifactId>mapstruct-processor</artifactId>
+                                <version>${mapstruct.version}</version>
+                            </path>
+                        </annotationProcessorPaths>
+                    </configuration>
+                </plugin>
+
+                <!-- Unit tests -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${maven-surefire-plugin.version}</version>
+                    <configuration>
+                        <excludes>
+                            <exclude>**/*IT.java</exclude>
+                        </excludes>
+                    </configuration>
+                </plugin>
+
+                <!-- Integration tests (*IT.java) -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-failsafe-plugin</artifactId>
+                    <version>${maven-failsafe-plugin.version}</version>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>integration-test</goal>
+                                <goal>verify</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+
+                <!-- Code coverage -->
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>${jacoco-plugin.version}</version>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>prepare-agent</goal>
+                            </goals>
+                        </execution>
+                        <execution>
+                            <id>report</id>
+                            <phase>test</phase>
+                            <goals>
+                                <goal>report</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+
+                <!-- Spring Boot repackage (only needed in cdp-loader-api) -->
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <version>${spring-boot.version}</version>
+                    <configuration>
+                        <excludes>
+                            <exclude>
+                                <groupId>org.projectlombok</groupId>
+                                <artifactId>lombok</artifactId>
+                            </exclude>
+                        </excludes>
+                    </configuration>
+                </plugin>
+
+                <!-- Flyway Maven plugin
+                     Maven plugins run in an isolated classloader that is separate
+                     from the project classloader.  Without explicit plugin
+                     <dependencies>, Maven resolves flyway-core and
+                     flyway-database-oracle through its own plugin repository
+                     resolution and may pick up 9.22.3 from the Boot BOM embedded
+                     in spring-boot-dependencies.  Adding them here forces the
+                     plugin classloader to use the same pinned versions as the
+                     application.  ojdbc11 is also required because the plugin
+                     must open a JDBC connection to Oracle when flyway:migrate
+                     or flyway:validate is run directly via Maven. -->
+                <plugin>
+                    <groupId>org.flywaydb</groupId>
+                    <artifactId>flyway-maven-plugin</artifactId>
+                    <version>${flyway.version}</version>
+                    <dependencies>
+                        <dependency>
+                            <groupId>org.flywaydb</groupId>
+                            <artifactId>flyway-database-oracle</artifactId>
+                            <version>${flyway.version}</version>
+                        </dependency>
+                        <dependency>
+                            <groupId>com.oracle.database.jdbc</groupId>
+                            <artifactId>ojdbc11</artifactId>
+                            <version>${ojdbc11.version}</version>
+                        </dependency>
+                    </dependencies>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+
+</project>

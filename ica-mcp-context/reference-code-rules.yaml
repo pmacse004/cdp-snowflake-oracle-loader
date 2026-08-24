@@ -1,0 +1,240 @@
+# =============================================================================
+# ICA/MCP Context — Reference Code Rules
+# =============================================================================
+# Documents all reference code domains used in the pipeline.
+# Source: REF.CODE_VALUE in CDP_UTIL_DB.REF schema (Snowflake).
+# Populated by: infra/snowflake/05-seed-reference-data.sql
+# Read by view: TRY_TO_DECIMAL(ATTRIBUTES[key]::STRING, p, s)
+#
+# Purpose for ICA/MCP:
+#   - Tenant adapters must populate REF.CODE_VALUE before running jobs
+#   - Rate plan ATTRIBUTES format must match the documented schema
+#   - Status codes must exactly match the accepted value sets
+# =============================================================================
+
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+artifact: reference-code-rules
+
+# ============================================================================
+# Reference code domains
+# ============================================================================
+domains:
+
+  # --------------------------------------------------------------------------
+  # DOMAIN: ACCT_STATUS — Account and customer status codes
+  # --------------------------------------------------------------------------
+  - domain: ACCT_STATUS
+    description: Status codes for customer and energy accounts.
+    table: REF.CODE_VALUE (CDP_UTIL_DB.REF)
+    used_by:
+      - CUSTOMER.CUSTOMER.ACCOUNT_STATUS (customer status)
+      - CUSTOMER.ENERGY_ACCOUNT.ACCOUNT_STATUS (account status)
+    view_join:
+      - VW_DAILY_CUSTOMER_EXPORT: acct_status_ref CTE → ACCT_STATUS_LABEL
+      - VW_DAILY_CUSTOMER_ACCOUNT_EXPORT: acct_status_ref CTE → ACCT_STATUS_LABEL
+    validation_rule: VR-CUST-004 / VR-EA-004
+    accepted_codes:
+      - code: ACTIVE
+        label: Active
+        description: Account is in good standing and active.
+      - code: INACTIVE
+        label: Inactive
+        description: Account has been closed or deactivated. IS_ACTIVE=0 in Oracle.
+      - code: SUSPENDED
+        label: Suspended
+        description: Account temporarily suspended (e.g. non-payment).
+      - code: PENDING
+        label: Pending
+        description: Account created but not yet fully activated.
+    notes: >
+      The ATTRIBUTES column is null for ACCT_STATUS — no structured parameters.
+      CODE_LABEL is the human-readable display label only.
+
+  # --------------------------------------------------------------------------
+  # DOMAIN: CUST_TYPE — Customer type codes
+  # --------------------------------------------------------------------------
+  - domain: CUST_TYPE
+    description: Classification of the utility customer.
+    table: REF.CODE_VALUE (CDP_UTIL_DB.REF)
+    used_by:
+      - CUSTOMER.CUSTOMER.CUSTOMER_TYPE
+    view_join:
+      - VW_DAILY_CUSTOMER_EXPORT: cust_type_ref CTE → CUST_TYPE_LABEL
+      - VW_DAILY_CUSTOMER_ACCOUNT_EXPORT: cust_type_ref CTE → CUST_TYPE_LABEL
+    validation_rule: VR-CUST-003
+    accepted_codes:
+      - code: RESIDENTIAL
+        label: Residential
+        description: Individual/household consumer.
+      - code: COMMERCIAL
+        label: Commercial
+        description: Business customer (small to medium).
+      - code: INDUSTRIAL
+        label: Industrial
+        description: Large industrial consumer.
+    notes: ATTRIBUTES null for CUST_TYPE — no structured parameters.
+
+  # --------------------------------------------------------------------------
+  # DOMAIN: RATE_PLAN — Rate plan codes with billing parameters
+  # --------------------------------------------------------------------------
+  - domain: RATE_PLAN
+    description: >
+      Electric rate plans used to calculate charges for monthly usage records.
+      Each active rate plan has structured parameters in ATTRIBUTES (VARIANT).
+    table: REF.CODE_VALUE (CDP_UTIL_DB.REF)
+    used_by:
+      - BILLING.MONTHLY_USAGE.RATE_PLAN
+    view_join:
+      - VW_MONTHLY_USAGE_BILLING_EXPORT: rate_params CTE → all CALC_* charge columns
+    validation_rule: VR-USG-010, VR-RATE-001
+    attributes_schema:
+      description: >
+        ATTRIBUTES is a Snowflake VARIANT column.
+        All rate plan rows must have a populated ATTRIBUTES object.
+        Fields:
+      fields:
+        - key: fixed
+          type: NUMBER(10,2)
+          description: Fixed charge per billing period in currency units.
+          null_meaning: Plan has no fixed component (distinguished from 0 by null check).
+          ica_rule: TR-BILL-02
+
+        - key: energy
+          type: NUMBER(10,6)
+          description: Energy rate per kWh in currency/kWh (6 decimal places for precision).
+          null_meaning: Missing rate — Spring Batch will reject the usage record (VR-RATE-001).
+          ica_rule: TR-BILL-03
+
+        - key: demand
+          type: NUMBER(10,6)
+          description: Demand rate per kW in currency/kW (6 decimal places).
+          null_meaning: Plan has no demand charge component. CALC_DEMAND_CHARGE = 0 (ICA MU-AC-09).
+          ica_rule: TR-BILL-04
+
+        - key: tax
+          type: NUMBER(10,6)
+          description: Tax rate as a fraction (e.g. 0.080 = 8%). Applied to subtotal.
+          null_meaning: Missing tax rate — Spring Batch rejects usage record (VR-RATE-001).
+          ica_rule: TR-BILL-06
+
+        - key: synthetic
+          type: BOOLEAN
+          description: "true if this rate plan was artificially generated for demo purposes."
+          null_meaning: Absent for real rate plans; present on seeded demo data.
+          ica_rule: N/A — informational only, not used in calculations.
+
+    variant_extraction_pattern: >
+      TRY_TO_DECIMAL(ATTRIBUTES['key']::STRING, precision, scale)
+      This is the ONLY correct extraction pattern. Do not use:
+        - TRY_CAST(ATTRIBUTES::VARIANT, NUMBER)  -- not supported by Snowflake
+        - TRY_PARSE_JSON(CODE_LABEL)             -- CODE_LABEL is text label, not JSON
+        - ATTRIBUTES:key                         -- colon syntax also works but ::STRING
+                                                    cast is required before TRY_TO_DECIMAL
+
+    example_attributes_object: |
+      {"fixed": 8.50, "energy": 0.1150, "demand": null, "tax": 0.0800, "synthetic": true}
+
+    seeded_rate_plans:
+      - code: RES_STD
+        label: Residential Standard
+        attributes: '{"fixed":8.50,"energy":0.1150,"demand":null,"tax":0.0800,"synthetic":true}'
+        notes: Standard residential flat rate; no demand component.
+
+      - code: RES_TOU
+        label: Residential Time-of-Use
+        attributes: '{"fixed":9.00,"energy":0.1350,"demand":null,"tax":0.0800,"synthetic":true}'
+        notes: TOU residential rate; higher energy rate, no demand.
+
+      - code: SMC_STD
+        label: Small Commercial Standard
+        attributes: '{"fixed":15.00,"energy":0.1050,"demand":3.50,"tax":0.0850,"synthetic":true}'
+        notes: Small commercial with demand component.
+
+      - code: SMC_DEMAND
+        label: Small Commercial Demand
+        attributes: '{"fixed":18.00,"energy":0.0950,"demand":5.00,"tax":0.0850,"synthetic":true}'
+        notes: Higher demand rate, lower energy rate.
+
+      - code: IND_LARGE
+        label: Industrial Large
+        attributes: '{"fixed":50.00,"energy":0.0750,"demand":8.00,"tax":0.0700,"synthetic":true}'
+        notes: Industrial bulk rate with significant demand component.
+
+    tenant_adapter_notes: >
+      Tenant implementations must replace these synthetic rate plans with actual
+      tariff data before running production loads.
+      The ATTRIBUTES schema is fixed; only the values change per tariff filing.
+      IS_ACTIVE = TRUE is required for the rate plan to be picked up by the view.
+
+  # --------------------------------------------------------------------------
+  # DOMAIN: SERVICE_TYPE — (informational — not in REF.CODE_VALUE)
+  # --------------------------------------------------------------------------
+  - domain: SERVICE_TYPE
+    description: >
+      Type of utility service delivered to the energy account.
+      This domain is NOT stored in REF.CODE_VALUE — it is a source-table constant.
+    used_by:
+      - CUSTOMER.ENERGY_ACCOUNT.SERVICE_TYPE
+    accepted_values:
+      - ELECTRIC (default)
+    notes: >
+      All seeded demo data uses SERVICE_TYPE = 'ELECTRIC'.
+      Multi-service tenants (gas, water) must extend the model with additional
+      accepted values and corresponding rate plans.
+
+  # --------------------------------------------------------------------------
+  # DOMAIN: READ_TYPE — Meter read type codes
+  # --------------------------------------------------------------------------
+  - domain: READ_TYPE
+    description: Classification of how the meter reading was obtained.
+    used_by:
+      - BILLING.MONTHLY_USAGE.READ_TYPE
+    accepted_values:
+      - code: ACTUAL
+        description: Physical meter reading.
+      - code: ESTIMATED
+        description: Usage estimated by utility (no physical read this period).
+    notes: >
+      Not stored in REF.CODE_VALUE — hardcoded acceptable values.
+      USAGE_QUALITY_STATUS in TGT_MONTHLY_USAGE extends this:
+        ACTUAL / ESTIMATED / CORRECTED (CORRECTED = IS_CORRECTION = TRUE)
+
+  # --------------------------------------------------------------------------
+  # DOMAIN: CONTACT_TYPE — (informational — not in REF.CODE_VALUE)
+  # --------------------------------------------------------------------------
+  - domain: CONTACT_TYPE
+    description: Type of customer contact record.
+    used_by:
+      - CUSTOMER.CUSTOMER_CONTACT.CONTACT_TYPE
+    accepted_values:
+      - EMAIL
+      - PHONE
+      - MAILING_ADDRESS
+    notes: >
+      Export views filter for EMAIL and PHONE (IS_PRIMARY = TRUE) only.
+      MAILING_ADDRESS contacts are not exported in current view design.
+
+# ============================================================================
+# Reference data loading rules
+# ============================================================================
+loading_rules:
+  - rule: REF-LOAD-01
+    description: >
+      Reference data must be seeded before ETL jobs run.
+      Run infra/snowflake/05-seed-reference-data.sql as CDP_ADMIN_ROLE.
+  - rule: REF-LOAD-02
+    description: >
+      Rate plan ATTRIBUTES must be populated for all DOMAIN=RATE_PLAN rows
+      before VW_MONTHLY_USAGE_BILLING_EXPORT is queried.
+      Run infra/snowflake/03a-add-reference-attributes.sql if ATTRIBUTES column
+      was not present in the original CODE_VALUE DDL run.
+  - rule: REF-LOAD-03
+    description: >
+      IS_ACTIVE = TRUE is required for a rate plan to be joined by the view.
+      Inactive rate plans produce NULL calculated charges for any usage rows
+      that reference them.
+  - rule: REF-LOAD-04
+    description: >
+      DOMAIN+CODE uniqueness constraint (uq_cv_domain_code) prevents duplicate
+      rate plan rows.  Tenant adapters must MERGE, not blind-INSERT.

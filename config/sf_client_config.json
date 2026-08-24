@@ -1,0 +1,6 @@
+{
+  "common": {
+    "log_level": "OFF",
+    "log_path": "logs"
+  }
+}

@@ -1,0 +1,166 @@
+# =============================================================================
+# ICA/MCP Context — Non-Functional Requirements
+# =============================================================================
+# Documents performance targets, scalability assumptions, operational
+# requirements, and deployment constraints for the CDP Snowflake-Oracle Loader.
+#
+# Vendor-neutral — no tenant-specific values.
+# =============================================================================
+
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+artifact: nonfunctional-requirements
+
+# ============================================================================
+# Data volumes (demo / baseline)
+# ============================================================================
+data_volumes:
+  customers: ~1000 (demo dataset; production may scale 10x–100x)
+  energy_accounts: ~1000 (one-to-one with customers in demo)
+  monthly_usage_rows: ~1864 per June cycle (two cohorts); ~10 per script-13 run
+  intentional_invalid: 2 rows per monthly load (USG-INVK-*, USG-INVD-*)
+  note: >
+    Do not hard-code 932 as the expected row count in application logic.
+    The application must process the actual current Snowflake dataset.
+
+# ============================================================================
+# Performance targets
+# ============================================================================
+performance:
+  initial_load:
+    customers: < 60 seconds for 1000 rows
+    accounts: < 60 seconds for 1000 rows
+    monthly_usage: < 120 seconds for 2000 rows
+    total_budget: < 5 minutes end-to-end for demo dataset
+
+  daily_incremental:
+    expected_changed_rows: 0–100 per run (demo: ~10 in script 12)
+    target: < 30 seconds per incremental run
+
+  monthly_usage:
+    expected_new_rows: ~1000–2000 per billing month
+    target: < 2 minutes per monthly run
+
+  chunk_size:
+    default: 500 (customer/account), 250 (usage)
+    configurable: cdp.batch.chunk-size property
+    note: >
+      Larger chunks improve throughput but increase memory and Oracle batch size.
+      For demo dataset, defaults are sufficient.
+
+# ============================================================================
+# Availability and reliability
+# ============================================================================
+availability:
+  health_checks:
+    oracle: "SELECT 1 FROM DUAL" — lightweight; < 100ms
+    snowflake: "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_WAREHOUSE()" — lightweight
+    frequency: On-demand (health endpoint poll); NOT on every job step
+    never: Run aggregate/reconciliation queries during health polls.
+
+  restart_safety:
+    mechanism: >
+      All Oracle MERGE statements are idempotent.
+      Restarting a failed job re-reads from the last saved watermark.
+      Already-committed records are re-processed by MERGE with no data loss.
+
+  job_retry:
+    automatic: No automatic job retry at the job level.
+    chunk_retry: Transient connection errors retry up to 3 times per chunk.
+    manual_restart: Operator re-submits via POST /jobs/{name}/trigger.
+
+# ============================================================================
+# Concurrency constraints
+# ============================================================================
+concurrency:
+  max_parallel_jobs: 1 per job type
+  conflict_detection: ETL_JOB_RUN query for RUNNING status before launch
+  response_on_conflict: HTTP 409 Conflict with clear message
+  async_launch: >
+    Jobs are launched asynchronously.
+    POST /jobs/{name}/trigger returns HTTP 202 Accepted with runId.
+    Client polls GET /jobs/history or GET /jobs/{runId}/status.
+    Web request does NOT block until job completion.
+
+# ============================================================================
+# Spring Boot configuration
+# ============================================================================
+spring_boot:
+  version: "3.2.5"
+  java_version: "21"
+  spring_batch:
+    initialize_schema: never  # Oracle schema created by Flyway V001
+    chunk_size: configurable (default 500/250)
+    skip_limit: configurable (default 100)
+  datasource:
+    oracle:
+      annotation: "@Primary"
+      pool: HikariCP (Spring Boot default)
+      used_by: [Spring Batch JobRepository, Flyway, Oracle writers]
+    snowflake:
+      annotation: "never @Primary"
+      pool: HikariCP (separate pool)
+      used_by: [Snowflake readers, connectivity health check]
+  flyway:
+    version: "10.12.0" (flyway-core + flyway-database-oracle + flyway-maven-plugin — must match)
+    datasource: oracleDataSource only
+    never_applies_to: snowflakeDataSource
+  jpa:
+    ddl_auto: none   # Never create-drop; Oracle schema is Flyway-managed
+
+# ============================================================================
+# Deployment
+# ============================================================================
+deployment:
+  backend_port: 8080
+  frontend_port: 5173 (Vite dev server)
+  oracle: localhost:1521/FREEPDB1 (Oracle 23ai Free 23.7 via Docker)
+  snowflake: CDP_UTIL_DB.STAGING (cloud, read-only via service user)
+  environment_variables_required:
+    - CDP_SNOWFLAKE_ACCOUNT
+    - CDP_SNOWFLAKE_USER
+    - CDP_SNOWFLAKE_ROLE
+    - CDP_SNOWFLAKE_WAREHOUSE
+    - CDP_SNOWFLAKE_DATABASE
+    - CDP_SNOWFLAKE_SCHEMA
+    - CDP_SNOWFLAKE_PRIVATE_KEY_PATH
+    - CDP_ORACLE_JDBC_URL
+    - CDP_ORACLE_USERNAME
+    - CDP_ORACLE_PASSWORD
+
+# ============================================================================
+# Testing requirements
+# ============================================================================
+testing:
+  unit_tests:
+    framework: JUnit 5 + Mockito + MockMvc
+    coverage:
+      - CustomerValidator (18 tests)
+      - CustomerAccountValidator (9 tests)
+      - MonthlyUsageValidator (9 tests)
+      - JobController (7 tests)
+      - CdpLoaderApplicationTest (1 test)
+    total: 44 tests minimum; all must pass via mvn clean verify -DskipITs
+    ci_profile: application-ci.yml with H2 in-memory; Flyway disabled for tests
+
+  integration_tests:
+    require: Live Oracle + Snowflake connections
+    classification: MANUAL — not run in automated CI
+    note: >
+      Do NOT use @SpringBootTest with real datasources as default unit test.
+      Real connectivity tests require: source set-local-env.ps1 first.
+
+  performance_tests:
+    requirement: Not required for MVP.
+    note: Load times must be within declared targets for demo dataset.
+
+# ============================================================================
+# Build
+# ============================================================================
+build:
+  command: "mvn clean verify -DskipITs"
+  fat_jar: cdp-loader-api/target/cdp-loader-api-0.1.0-SNAPSHOT.jar (~131 MB)
+  frontend_build: "npm run build" (Vite, output to cdp-loader-ui/dist/)
+  no_mixed_flyway_versions: >
+    flyway-core, flyway-database-oracle, and flyway-maven-plugin must all be 10.12.0.
+    Run mvn dependency:tree -Dincludes=org.flywaydb to verify.

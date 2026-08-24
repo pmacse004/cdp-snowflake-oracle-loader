@@ -1,0 +1,172 @@
+# =============================================================================
+# ICA/MCP Context — Tenant Adapter Template
+# =============================================================================
+# Template for customising the CDP Snowflake-Oracle Loader for a specific
+# utility tenant deployment.
+#
+# Replace all <PLACEHOLDER> values with tenant-specific values.
+# Do NOT commit completed files to git (they contain real identifiers).
+# =============================================================================
+
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+artifact: tenant-adapter-template
+
+# ============================================================================
+# Tenant identity
+# ============================================================================
+tenant:
+  id: <TENANT_ID>                    # e.g. util-northeast-01
+  name: <TENANT_FULL_NAME>           # e.g. Northeast Utility Corp.
+  region: <REGION>                   # e.g. us-east-1
+  environment: <ENVIRONMENT>         # dev / staging / production
+
+# ============================================================================
+# Snowflake connection
+# ============================================================================
+snowflake:
+  account: <SNOWFLAKE_ACCOUNT>       # e.g. ABCDEF-XY12345  (no .snowflakecomputing.com suffix)
+  user: <SNOWFLAKE_SERVICE_USER>     # e.g. SVC_CDP_LOADER
+  role: <SNOWFLAKE_ROLE>             # e.g. CDP_LOADER_ROLE
+  warehouse: <SNOWFLAKE_WAREHOUSE>   # e.g. CDP_LOADER_WH
+  database: <SNOWFLAKE_DATABASE>     # e.g. CDP_UTIL_DB
+  schema: STAGING
+  private_key_path_env: CDP_SNOWFLAKE_PRIVATE_KEY_PATH   # DO NOT change this env var name
+  notes:
+    - Service user must have USAGE on warehouse, SELECT on STAGING views only.
+    - Use key-pair (RSA PKCS#8) authentication only — no password fallback.
+    - Do not use ACCOUNTADMIN or any human user as the service account.
+
+# ============================================================================
+# Oracle connection
+# ============================================================================
+oracle:
+  jdbc_url_env: CDP_ORACLE_JDBC_URL     # e.g. jdbc:oracle:thin:@//hostname:1521/SERVICENAME
+  username_env: CDP_ORACLE_USERNAME     # application schema user (not DBA/SYSDBA)
+  password_env: CDP_ORACLE_PASSWORD     # environment variable only — never hardcode
+  schema: <ORACLE_APP_USER>            # Oracle schema = application user name
+  notes:
+    - Flyway runs as the application user (not SYSDBA).
+    - V001-V004 migrations must be applied before the application starts.
+    - spring.batch.jdbc.initialize-schema=never must remain set.
+    - spring.jpa.hibernate.ddl-auto=none must remain set.
+
+# ============================================================================
+# Rate plan customisation
+# ============================================================================
+rate_plans:
+  replace_demo_data: true
+  instruction: >
+    Before running INITIAL_LOAD_JOB in a tenant environment:
+    1. Replace synthetic rate plan rows in REF.CODE_VALUE (DOMAIN=RATE_PLAN).
+    2. Ensure ATTRIBUTES VARIANT is populated for every active rate plan.
+    3. ATTRIBUTES schema: {"fixed": <NUMBER>, "energy": <NUMBER>, "demand": <NUMBER|null>, "tax": <NUMBER>}
+    4. Use MERGE (not blind INSERT) to be idempotent.
+    5. IS_ACTIVE = TRUE for plans currently in use.
+  tenant_rate_plans:
+    - code: <RATE_CODE_1>
+      label: <HUMAN_READABLE_LABEL>
+      attributes: '{"fixed": <FIXED_CHARGE>, "energy": <ENERGY_RATE>, "demand": <DEMAND_RATE_OR_NULL>, "tax": <TAX_RATE>}'
+
+# ============================================================================
+# Reference code customisation
+# ============================================================================
+reference_codes:
+  status_codes:
+    instruction: >
+      The ACCT_STATUS and CUST_TYPE domains must match the codes used in the
+      tenant source system.  If a tenant uses different status codes
+      (e.g. CLOSED instead of INACTIVE), either:
+        a) Add a code mapping layer in the Spring Batch processor, or
+        b) Update REF.CODE_VALUE to include tenant-specific codes.
+      The validator accepted-value sets (VR-CUST-003, VR-CUST-004, VR-EA-004)
+      must be updated in CustomerValidator.java and CustomerAccountValidator.java.
+  accepted_customer_types:
+    - RESIDENTIAL
+    - COMMERCIAL
+    - INDUSTRIAL
+    - <TENANT_SPECIFIC_TYPE>   # add if the tenant uses additional types
+  accepted_status_codes:
+    - ACTIVE
+    - INACTIVE
+    - SUSPENDED
+    - PENDING
+    - <TENANT_SPECIFIC_STATUS> # add if the tenant uses additional statuses
+
+# ============================================================================
+# Watermark initialisation
+# ============================================================================
+watermarks:
+  initial_run_timestamp: "1970-01-01T00:00:00Z"   # epoch — reads all records on first run
+  instruction: >
+    ETL_WATERMARK rows are auto-created by EtlWatermarkRepository on first access.
+    No manual pre-seeding is required.
+    To force a full re-load: DELETE FROM ETL_WATERMARK WHERE SOURCE_NAME IN
+    ('CUSTOMER_EXPORT', 'CUSTOMER_ACCOUNT_EXPORT', 'MONTHLY_USAGE_EXPORT');
+    Then re-run INITIAL_LOAD_JOB.
+
+# ============================================================================
+# Environment variable mapping
+# ============================================================================
+environment_variables:
+  required:
+    - name: CDP_SNOWFLAKE_ACCOUNT
+      example: ABCDEF-XY12345
+    - name: CDP_SNOWFLAKE_USER
+      example: SVC_CDP_LOADER
+    - name: CDP_SNOWFLAKE_ROLE
+      example: CDP_LOADER_ROLE
+    - name: CDP_SNOWFLAKE_WAREHOUSE
+      example: CDP_LOADER_WH
+    - name: CDP_SNOWFLAKE_DATABASE
+      example: CDP_UTIL_DB
+    - name: CDP_SNOWFLAKE_SCHEMA
+      example: STAGING
+    - name: CDP_SNOWFLAKE_PRIVATE_KEY_PATH
+      example: /secure/keys/snowflake_rsa_key.p8
+    - name: CDP_ORACLE_JDBC_URL
+      example: "jdbc:oracle:thin:@//dbhost:1521/PRODPDB1"
+    - name: CDP_ORACLE_USERNAME
+      example: CDP_LOADER
+    - name: CDP_ORACLE_PASSWORD
+      example: "<set interactively — never in files>"
+  template_file: scripts/set-local-env.template.ps1
+
+# ============================================================================
+# Flyway version constraint
+# ============================================================================
+flyway:
+  required_version: "10.12.0"
+  components: [flyway-core, flyway-database-oracle, flyway-maven-plugin]
+  verify_command: "mvn dependency:tree -Dincludes=org.flywaydb"
+  note: >
+    All three Flyway components must be at 10.12.0.
+    Mixed versions cause ClassNotFoundException at startup.
+    Do not introduce Flyway 9.x as a transitive dependency.
+
+# ============================================================================
+# CORS configuration for tenant deployment
+# ============================================================================
+cors:
+  instruction: >
+    Update CorsConfig.java allowedOrigins list to include the production
+    front-end URL for the tenant.
+    Remove localhost origins for production deployments.
+  example_production_origin: "https://cdp-dashboard.<TENANT_DOMAIN>"
+
+# ============================================================================
+# Checklist before first production run
+# ============================================================================
+pre_production_checklist:
+  - "[ ] Snowflake service user created with key-pair auth"
+  - "[ ] CDP_LOADER_ROLE granted SELECT on STAGING views"
+  - "[ ] Oracle CDP_LOADER user created with correct schema grants"
+  - "[ ] Flyway V001-V004 applied (via application startup or manual mvn flyway:migrate)"
+  - "[ ] REF.CODE_VALUE populated with tenant rate plans and status codes"
+  - "[ ] ATTRIBUTES column exists on CODE_VALUE (03a script)"
+  - "[ ] All environment variables set (no placeholders remain)"
+  - "[ ] .gitignore verified — no secrets in repository"
+  - "[ ] CORS origin updated for production URL"
+  - "[ ] Connection test passed: scripts/test-connections.ps1"
+  - "[ ] Unit tests pass: mvn clean verify -DskipITs"
+  - "[ ] Frontend builds: npm run build"

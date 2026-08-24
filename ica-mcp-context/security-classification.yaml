@@ -1,0 +1,153 @@
+# =============================================================================
+# ICA/MCP Context — Security Classification
+# =============================================================================
+# Documents data sensitivity levels, masking rules, and what must NEVER be
+# logged, stored, or transmitted.
+#
+# Vendor-neutral — no tenant-specific identifiers or real credential values.
+# =============================================================================
+
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+artifact: security-classification
+
+# ============================================================================
+# Data sensitivity levels
+# ============================================================================
+sensitivity_levels:
+
+  - level: HIGH
+    description: Personally identifiable information (PII) or authentication material.
+    handling: >
+      Must NOT be stored in ETL_RECORD_ERROR, application logs, or HTTP responses.
+      Access restricted to authorized system users only.
+    fields:
+      - table: CUSTOMER.CUSTOMER (Snowflake)
+        column: DATE_OF_BIRTH
+        reason: Personal demographic data.
+        export_treatment: EXCLUDED from all export views. Never reaches Java or Oracle target.
+
+      - table: CUSTOMER.CUSTOMER (Snowflake)
+        column: SSN_LAST4
+        reason: Partial social security number — PII even as last 4 digits.
+        export_treatment: EXCLUDED from all export views.
+
+      - table: CUSTOMER.CUSTOMER (Snowflake)
+        column: TAX_ID
+        reason: Business tax identifier — confidential.
+        export_treatment: EXCLUDED from all export views.
+
+      - credential: Snowflake private key (PKCS#8 PEM file)
+        path_placeholder: CDP_SNOWFLAKE_PRIVATE_KEY_PATH
+        handling: >
+          File path from environment variable only.
+          Key bytes loaded into memory; never logged, never serialized.
+          Fail with clear message if file is missing or unreadable.
+          No password fallback.
+
+      - credential: Oracle password
+        env_var: CDP_ORACLE_PASSWORD
+        handling: >
+          Environment variable only.
+          Never printed in logs, never returned in health or error responses.
+          Application properties files must use placeholder ${CDP_ORACLE_PASSWORD}.
+
+  - level: MEDIUM
+    description: Contact information and account details.
+    handling: >
+      Included in export views and Oracle target tables.
+      Must not appear in ETL_RECORD_ERROR SOURCE_EXCERPT in full.
+      Log only identifiers (IDs), not full contact values.
+    fields:
+      - table: VW_DAILY_CUSTOMER_EXPORT
+        column: EMAIL_ADDRESS
+        oracle_target: TGT_CUSTOMER_CONTACT (not loaded in current MVP)
+        log_rule: Log CONTACT_ID only in error records, not EMAIL_ADDRESS value.
+
+      - table: VW_DAILY_CUSTOMER_EXPORT
+        column: PHONE_NUMBER
+        oracle_target: TGT_CUSTOMER_CONTACT (not loaded in current MVP)
+        log_rule: Log CONTACT_ID only in error records, not PHONE_NUMBER value.
+
+      - table: VW_DAILY_CUSTOMER_ACCOUNT_EXPORT
+        columns: [ADDRESS_LINE1, CITY, STATE_CODE, ZIP_CODE]
+        oracle_target: TGT_PREMISE
+        log_rule: Log PREMISE_ID only in error records.
+
+  - level: LOW
+    description: Operational/business data — not personally identifiable.
+    handling: May appear in logs and error records by ID reference.
+    fields:
+      - CUSTOMER_ID, ENERGY_ACCOUNT_ID, BILLING_ACCOUNT_ID, PREMISE_ID, METER_ID
+      - USAGE_ID, BILLING_MONTH, RATE_PLAN, ACCOUNT_STATUS, CUSTOMER_TYPE
+      - KWH_USAGE, TOTAL_BILLED (aggregated financial data)
+
+# ============================================================================
+# What must NEVER appear in
+# ============================================================================
+never_in_logs:
+  - Private key file content (BEGIN PRIVATE KEY … END PRIVATE KEY)
+  - Raw private key bytes (any Base64 representation)
+  - Oracle password value
+  - Snowflake token or password
+  - DATE_OF_BIRTH values
+  - SSN_LAST4 values
+  - Full EMAIL_ADDRESS or PHONE_NUMBER in exception messages
+
+never_in_http_responses:
+  - Stack traces (return generic 500 message)
+  - JDBC URL containing password (e.g. jdbc:oracle:thin:USER/PASS@...)
+  - Private key file path (absolute path on server)
+  - Any credential value
+
+never_in_git:
+  - .env files containing real values
+  - application-local.yml with credentials
+  - *.p8 or *.pem private key files
+  - .cdp-loader/ key directory
+  - node_modules/
+  - target/ (compiled artifacts)
+
+# ============================================================================
+# .gitignore verification checklist
+# ============================================================================
+gitignore_required:
+  - "*.env"
+  - ".env"
+  - "application-local.yml"
+  - "application-local.yaml"
+  - "*.p8"
+  - "*.pem"
+  - ".cdp-loader/"
+  - "node_modules/"
+  - "target/"
+  - "*.key"
+
+# ============================================================================
+# CORS configuration
+# ============================================================================
+cors:
+  allowed_origins:
+    - "http://localhost:3000"   # React dev (alternate)
+    - "http://localhost:5173"   # Vite default dev server
+  not_allowed: "*" (wildcard is prohibited in production configuration)
+  note: >
+    CORS is restricted to local development origins only.
+    Tenant adapters must update allowed origins for their production front-end domain.
+
+# ============================================================================
+# Authentication model
+# ============================================================================
+authentication:
+  snowflake:
+    method: RSA key-pair authentication (PKCS#8 PEM)
+    no_fallback: >
+      Password authentication must NOT be configured as a fallback.
+      The DataSource configuration must only set authenticator = snowflake_jwt.
+    service_user: SVC_CDP_LOADER (not ACCOUNTADMIN or any human user)
+    role: CDP_LOADER_ROLE (SELECT on STAGING views only)
+
+  oracle:
+    method: Username + password (JDBC)
+    user: CDP_LOADER (application user, not DBA or SYSDBA)
+    note: CDP_LOADER has DML rights on CDP_LOADER schema only.

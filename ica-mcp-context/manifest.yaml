@@ -1,0 +1,156 @@
+# =============================================================================
+# manifest.yaml — ICA/MCP Context Package Manifest
+# CDP Snowflake-to-Oracle Loader
+# =============================================================================
+# This file is the entry point for any ICA Context Studio import tool or
+# MCP-aware AI assistant. It lists all artifacts in this package with their
+# purpose, format and the ICA source document each was derived from.
+#
+# RUNTIME NOTE: This package is used ONLY during design and code-generation.
+# The running application has NO dependency on ICA or MCP at runtime.
+# =============================================================================
+
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+package:
+  id: "cdp-snowflake-oracle-loader"
+  name: "CDP Snowflake-to-Oracle ETL Context"
+  version: "1.0.0"
+  description: >
+    Complete ICA/MCP context package for the CDP synthetic electric-utility
+    ETL pipeline. Covers source schema (Snowflake), target schema (Oracle),
+    all column-level mappings, transformation rules, validation rules,
+    watermark strategy, job sequencing and error handling.
+  project_type: "ETL_PIPELINE"
+  source_platform: "Snowflake"
+  target_platform: "Oracle 23ai Free"
+  runtime_note: >
+    ICA/MCP is used ONLY during Bob-assisted design and code generation.
+    The running Spring Boot application connects only to Snowflake (read)
+    and Oracle (write). No ICA or MCP dependency at runtime.
+
+vendor_neutral: true
+tenant_adapter: "ica-mcp-context/tenant-adapter-template.yaml"
+
+artifacts:
+  - id: "business-glossary"
+    file: "business-glossary.yaml"
+    ica_doc: "ICA-01"
+    type: "GLOSSARY"
+    description: "Canonical business term definitions"
+
+  - id: "source-schema"
+    file: "source-schema.yaml"
+    ica_doc: "ICA-02"
+    type: "SCHEMA"
+    description: "Snowflake source tables, columns, types, keys and export views"
+
+  - id: "target-schema"
+    file: "target-schema.yaml"
+    ica_doc: "ICA-03"
+    type: "SCHEMA"
+    description: "Oracle target tables, columns, Oracle types, constraints and MERGE keys"
+
+  - id: "entity-mappings"
+    file: "entity-mappings.yaml"
+    ica_doc: "ICA-04"
+    type: "ENTITY_MAPPING"
+    description: "Source-to-target entity-level mapping including grain and load frequency"
+
+  - id: "column-mappings"
+    file: "column-mappings.yaml"
+    ica_doc: "ICA-05"
+    type: "COLUMN_MAPPING"
+    description: "Full column-level mapping catalogue with rule references"
+
+  - id: "join-rules"
+    file: "join-rules.yaml"
+    ica_doc: "ICA-06"
+    type: "JOIN_RULE"
+    description: "Snowflake Layer 1 multi-table join specifications"
+
+  - id: "transformation-rules"
+    file: "transformation-rules.yaml"
+    ica_doc: "ICA-06"
+    type: "TRANSFORMATION_RULE"
+    description: "Layer 1 (Snowflake) and Layer 2 (Spring Batch) transformation rules"
+
+  - id: "validation-rules"
+    file: "validation-rules.yaml"
+    ica_doc: "ICA-07"
+    type: "VALIDATION_RULE"
+    description: "Record-level validation rules with REJECT/LOG_WARNING actions"
+
+  - id: "reference-code-rules"
+    file: "reference-code-rules.yaml"
+    ica_doc: "ICA-08"
+    type: "REFERENCE_CODE"
+    description: "Code translation tables and reference data rules"
+
+  - id: "incremental-watermark-rules"
+    file: "incremental-watermark-rules.yaml"
+    ica_doc: "ICA-09"
+    type: "WATERMARK_RULE"
+    description: "Composite watermark strategy and per-table watermark definitions"
+
+  - id: "initial-load-rules"
+    file: "initial-load-rules.yaml"
+    ica_doc: "ICA-10"
+    type: "JOB_RULE"
+    description: "Initial full-load job sequencing, pre-conditions and idempotency rules"
+
+  - id: "daily-load-rules"
+    file: "daily-load-rules.yaml"
+    ica_doc: "ICA-11"
+    type: "JOB_RULE"
+    description: "Daily incremental load rules and composite watermark update logic"
+
+  - id: "monthly-load-rules"
+    file: "monthly-load-rules.yaml"
+    ica_doc: "ICA-12"
+    type: "JOB_RULE"
+    description: "Monthly usage load rules, charge calculations and intentional test records"
+
+  - id: "error-handling-rules"
+    file: "error-handling-rules.yaml"
+    ica_doc: "ICA-13"
+    type: "ERROR_RULE"
+    description: "Error isolation, ETL_RECORD_ERROR schema and skip policy"
+
+  - id: "reconciliation-rules"
+    file: "reconciliation-rules.yaml"
+    ica_doc: "ICA-14"
+    type: "RECONCILIATION_RULE"
+    description: "Source-to-target count and aggregate reconciliation specifications"
+
+  - id: "security-classification"
+    file: "security-classification.yaml"
+    ica_doc: "ICA-15"
+    type: "SECURITY"
+    description: "Field-level sensitivity, masking rules and prohibited storage"
+
+  - id: "nonfunctional-requirements"
+    file: "nonfunctional-requirements.yaml"
+    ica_doc: "ICA-16"
+    type: "NFR"
+    description: "Scalability, performance and operational requirements"
+
+  - id: "context-index"
+    file: "context-index.json"
+    type: "INDEX"
+    description: "Machine-readable index for MCP tool search and retrieval"
+
+validation:
+  unique_rule_ids: true
+  all_columns_mapped: true
+  no_secrets: true
+  yaml_valid: true
+  coverage:
+    total_source_columns_mapped: 87
+    total_target_business_columns: 62
+    total_target_control_columns: 38
+    mappings_with_transform_rule: 54
+    mappings_with_validation_rule: 41
+    initial_applicable: 87
+    daily_applicable: 52
+    monthly_applicable: 28

@@ -1,0 +1,100 @@
+# =============================================================================
+# CDP Snowflake-to-Oracle Loader -- Local Infrastructure
+# =============================================================================
+# Starts Oracle Database Free 23c for local development.
+# The Spring Boot application runs on the host (via Maven); only Oracle is
+# containerised here.
+#
+# IMAGE  [TAG STATUS: UNVERIFIED -- Docker pull not executed in this session]
+#   container-registry.oracle.com/database/free:23.7.0.0
+#   - Free tier Oracle 23c (23ai); no licence fee
+#   - Registry: container-registry.oracle.com -- no login required for /database/free
+#   - Architecture: linux/amd64 only
+#     On Apple Silicon: Docker Desktop must have "Use Rosetta" enabled
+#   - PDB service name : FREEPDB1  (hard-coded in this image)
+#   - CDB service name : FREE
+#   - Listener port    : 1521
+#   - EM Express port  : 5500 (optional)
+#   - Health-check     : /opt/oracle/checkDBStatus.sh (bundled in image)
+#   - If this exact tag is unavailable: try :latest and update this file once
+#     confirmed, then re-pin to the actual pulled digest.
+#
+# FIRST RUN
+#   Database initialisation takes 60-180 seconds on first start.
+#   The container moves to "healthy" only after FREEPDB1 is READ WRITE.
+#   Subsequent starts (volume already initialised) take ~20-30 seconds.
+#
+# PREREQUISITES
+#   1. Copy infra/docker/.env.template to infra/docker/.env and set ORACLE_PWD.
+#   2. Ensure Docker Desktop has >= 4 GB RAM allocated (Settings > Resources).
+#
+# USAGE
+#   Recommended : .\scripts\start-oracle.ps1 -WaitReady
+#   Direct      : docker compose -f infra/docker/docker-compose.yml up -d
+#
+# WINDOWS DOCKER DESKTOP
+#   WSL2 backend required (default on Docker Desktop 4.x).
+#   Hyper-V backend also supported.
+# =============================================================================
+
+services:
+
+  oracle-db:
+    # -------------------------------------------------------------------------
+    # Image tag is pinned for reproducibility.
+    # TAG STATUS: UNVERIFIED -- not pulled or started in this session.
+    # To upgrade: change tag, delete volume cdp-oracle-data, restart.
+    # -------------------------------------------------------------------------
+    image: container-registry.oracle.com/database/free:23.7.0.0
+    container_name: cdp-oracle-db
+    restart: unless-stopped
+
+    ports:
+      - "1521:1521"   # Oracle TNS listener -- JDBC: localhost:1521/FREEPDB1
+      - "5500:5500"   # Oracle EM Express   -- optional: http://localhost:5500/em
+
+    # -------------------------------------------------------------------------
+    # Supported environment variables for the oracle/database-free image:
+    #   ORACLE_PWD         -- sets password for SYS, SYSTEM and PDBADMIN
+    #   ORACLE_CHARACTERSET -- character set for the database (default AL32UTF8)
+    # No other environment variables are set here.
+    # -------------------------------------------------------------------------
+    environment:
+      ORACLE_PWD: "${ORACLE_PWD}"
+      ORACLE_CHARACTERSET: "AL32UTF8"
+
+    # -------------------------------------------------------------------------
+    # Persistent volume: data survives container stop/start and recreate.
+    # To WIPE all data (destructive): docker volume rm cdp-oracle-data
+    # -------------------------------------------------------------------------
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+
+    # -------------------------------------------------------------------------
+    # Health check
+    # checkDBStatus.sh returns 0 when FREEPDB1 is open READ WRITE.
+    # start_period prevents failure-counting during slow first-run init.
+    # -------------------------------------------------------------------------
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/oracle/checkDBStatus.sh"]
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 180s
+
+    # -------------------------------------------------------------------------
+    # Resource limits
+    # Oracle Free licence: max 2 CPU threads, 2 GB SGA.
+    # mem_limit covers SGA + PGA + OS overhead; 4 GB is the safe minimum.
+    # Raise shm_size to 2g if ORA-00845 (MEMORY_TARGET) appears.
+    # -------------------------------------------------------------------------
+    shm_size: "1g"
+    mem_limit: "4g"
+    cpus: "2.0"
+
+# =============================================================================
+# Named volumes
+# =============================================================================
+volumes:
+  oracle-data:
+    name: cdp-oracle-data

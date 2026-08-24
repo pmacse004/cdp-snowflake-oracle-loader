@@ -1,0 +1,128 @@
+# =============================================================================
+# ICA/MCP Context — Reconciliation Rules
+# =============================================================================
+# Defines the reconciliation checks performed after each load job.
+# Implementation: EtlReconciliationRepository.java + ETL_RECONCILIATION table (V003)
+# =============================================================================
+
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+artifact: reconciliation-rules
+
+# ============================================================================
+# When reconciliation runs
+# ============================================================================
+timing:
+  initial_load: After all three steps complete; before job status set to COMPLETED.
+  daily_incremental: After each customer and account step.
+  monthly_usage: After the usage step.
+  health_poll: Lightweight row-count only (no sum aggregations on every poll).
+  note: >
+    Full KWH and billed-total reconciliation queries are expensive.
+    Run after job completion, not on every health check.
+
+# ============================================================================
+# Reconciliation checks
+# ============================================================================
+checks:
+
+  - id: RECON-01
+    name: Customer row count
+    source_query: "SELECT COUNT(*) FROM STAGING.VW_DAILY_CUSTOMER_EXPORT"
+    target_query: "SELECT COUNT(*) FROM TGT_CUSTOMER"
+    expected_difference: 0
+    on_mismatch: >
+      Log to ETL_RECONCILIATION with SOURCE_COUNT, TARGET_COUNT, DIFFERENCE.
+      Dashboard shows reconciliation row with non-zero difference.
+      Job status is NOT automatically changed — counts may diverge legitimately
+      when rejects occur.  The REJECTS metric in ETL_JOB_RUN explains the gap.
+
+  - id: RECON-02
+    name: Energy account row count
+    source_query: "SELECT COUNT(*) FROM STAGING.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT"
+    target_query: "SELECT COUNT(*) FROM TGT_ENERGY_ACCOUNT"
+    expected_difference: 0
+    on_mismatch: Log to ETL_RECONCILIATION.
+
+  - id: RECON-03
+    name: Monthly usage row count (valid rows)
+    source_query: >
+      SELECT COUNT(*) FROM STAGING.VW_MONTHLY_USAGE_BILLING_EXPORT
+      WHERE KWH_USAGE >= 0
+        AND BILL_END_DATE >= BILL_START_DATE
+        AND ENERGY_ACCOUNT_ID IS NOT NULL
+        AND USAGE_ID IS NOT NULL
+    target_query: "SELECT COUNT(*) FROM TGT_MONTHLY_USAGE"
+    expected_difference: 0
+    note: >
+      Source query excludes intentional invalid rows (USG-INVK-*, USG-INVD-*)
+      using the same conditions applied by the validator.
+      Difference should equal the number of records in ETL_RECORD_ERROR for this run.
+
+  - id: RECON-04
+    name: Total KWH usage sum
+    source_query: >
+      SELECT COALESCE(SUM(KWH_USAGE), 0)
+      FROM STAGING.VW_MONTHLY_USAGE_BILLING_EXPORT
+      WHERE KWH_USAGE >= 0
+        AND BILL_END_DATE >= BILL_START_DATE
+    target_query: "SELECT COALESCE(SUM(KWH_USAGE), 0) FROM TGT_MONTHLY_USAGE"
+    tolerance: 0.001   # rounding tolerance in kWh
+    on_mismatch: >
+      Log RECON_KWH_SOURCE, RECON_KWH_TARGET, RECON_KWH_DIFF to ETL_RECONCILIATION.
+      Difference > tolerance indicates a transformation bug.
+
+  - id: RECON-05
+    name: Total billed amount sum
+    source_query: >
+      SELECT COALESCE(SUM(CALC_TOTAL_BILLED), 0)
+      FROM STAGING.VW_MONTHLY_USAGE_BILLING_EXPORT
+      WHERE CALC_TOTAL_BILLED IS NOT NULL
+        AND KWH_USAGE >= 0
+        AND BILL_END_DATE >= BILL_START_DATE
+    target_query: "SELECT COALESCE(SUM(TOTAL_BILLED), 0) FROM TGT_MONTHLY_USAGE"
+    tolerance: 0.01    # rounding tolerance in currency units
+    on_mismatch: Log to ETL_RECONCILIATION.
+
+# ============================================================================
+# ETL_RECONCILIATION table schema (V003 migration)
+# ============================================================================
+reconciliation_table: ETL_RECONCILIATION
+columns:
+  - RECON_ID:         NUMBER(19,0)   NOT NULL PK
+  - RUN_ID:           NUMBER(19,0)   NOT NULL FK → ETL_JOB_RUN
+  - ENTITY_NAME:      VARCHAR2(100)  NOT NULL  — e.g. CUSTOMER, MONTHLY_USAGE
+  - SOURCE_COUNT:     NUMBER(19,0)
+  - TARGET_COUNT:     NUMBER(19,0)
+  - COUNT_DIFF:       NUMBER(19,0)   — TARGET - SOURCE (negative means missing in target)
+  - SOURCE_KWH:       NUMBER(18,3)   — optional
+  - TARGET_KWH:       NUMBER(18,3)
+  - KWH_DIFF:         NUMBER(18,3)
+  - SOURCE_BILLED:    NUMBER(18,2)   — optional
+  - TARGET_BILLED:    NUMBER(18,2)
+  - BILLED_DIFF:      NUMBER(18,2)
+  - RECON_STATUS:     VARCHAR2(20)   — MATCH / MISMATCH / PARTIAL
+  - CREATED_AT:       TIMESTAMP      NOT NULL
+
+# ============================================================================
+# Dashboard reconciliation display rules
+# ============================================================================
+dashboard:
+  latest_recon:
+    query: >
+      SELECT * FROM ETL_RECONCILIATION
+      WHERE RUN_ID = (SELECT MAX(RUN_ID) FROM ETL_JOB_RUN WHERE STATUS IN ('COMPLETED','COMPLETED_WITH_ERRORS'))
+      ORDER BY ENTITY_NAME
+    display_columns:
+      - ENTITY_NAME
+      - SOURCE_COUNT
+      - TARGET_COUNT
+      - COUNT_DIFF  (highlight in red if != 0)
+      - KWH_DIFF    (show for MONTHLY_USAGE only)
+      - BILLED_DIFF (show for MONTHLY_USAGE only)
+      - RECON_STATUS
+
+  health_poll_note: >
+    The health check endpoint must NOT run reconciliation queries.
+    Use: SELECT 1 FROM DUAL (Oracle) / SELECT CURRENT_USER() (Snowflake).
+    Full reconciliation is triggered only after a job completes.

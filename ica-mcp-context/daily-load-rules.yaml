@@ -1,0 +1,115 @@
+# =============================================================================
+# ICA/MCP Context — Daily Incremental Load Rules
+# =============================================================================
+# Rules governing the DAILY_INCREMENTAL_JOB execution.
+# Reads only new/changed records since the last successful watermark.
+# =============================================================================
+
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+artifact: daily-load-rules
+
+job_name: DAILY_INCREMENTAL_JOB
+
+# ============================================================================
+# Design intent
+# ============================================================================
+design:
+  nature: >
+    Incremental update using composite watermark comparison.
+    Reads only records where RECORD_EFFECTIVE_TS > last watermark
+    (or equal timestamp with greater ID for tie-breaking).
+  prerequisite: >
+    INITIAL_LOAD_JOB must have been run at least once before the first
+    daily incremental run.  If watermarks are at epoch, the incremental
+    job behaves identically to the initial load.
+  source_script: infra/snowflake/12-simulate-demo-daily-run.sql
+  demo_changes_script12:
+    customers_added: 5   # new DC-01 customers
+    customers_changed: 5  # contact/status updates
+    accounts_associated: "as needed for new customers"
+
+# ============================================================================
+# Step execution order
+# ============================================================================
+steps:
+  - step: step1-incremental-customers
+    reads_from: STAGING.VW_DAILY_CUSTOMER_EXPORT
+    watermark_record: CUSTOMER_EXPORT
+    query_condition: >
+      WHERE (RECORD_EFFECTIVE_TS > :lastTimestamp)
+         OR (RECORD_EFFECTIVE_TS = :lastTimestamp AND CUSTOMER_ID > :lastSourceId)
+      ORDER BY RECORD_EFFECTIVE_TS ASC, CUSTOMER_ID ASC
+    writes_to: TGT_CUSTOMER
+    order: 1
+    chunk_size: ${cdp.batch.chunk-size:500}
+
+  - step: step2-incremental-accounts
+    reads_from: STAGING.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT
+    watermark_record: CUSTOMER_ACCOUNT_EXPORT
+    query_condition: >
+      WHERE (RECORD_EFFECTIVE_TS > :lastTimestamp)
+         OR (RECORD_EFFECTIVE_TS = :lastTimestamp AND ENERGY_ACCOUNT_ID > :lastSourceId)
+      ORDER BY RECORD_EFFECTIVE_TS ASC, ENERGY_ACCOUNT_ID ASC
+    writes_to: TGT_ENERGY_ACCOUNT, TGT_BILLING_ACCOUNT, TGT_PREMISE, TGT_METER
+    order: 2
+    chunk_size: ${cdp.batch.chunk-size:500}
+    dependency: step1 must be COMPLETED
+
+# ============================================================================
+# What triggers a record to appear in the incremental set
+# ============================================================================
+change_detection:
+  - change: Customer name update
+    affected_view_column: CUSTOMER.CUSTOMER.UPDATED_AT (part of RECORD_EFFECTIVE_TS)
+    result: Record picked up by CUSTOMER_EXPORT watermark.
+
+  - change: Customer status change
+    affected_view_column: CUSTOMER.CUSTOMER.UPDATED_AT
+    result: Picked up; IS_ACTIVE re-evaluated in processor.
+
+  - change: Email/phone contact update
+    affected_view_column: EMAIL_UPDATED_AT / PHONE_UPDATED_AT (part of RECORD_EFFECTIVE_TS)
+    result: Picked up by composite RECORD_EFFECTIVE_TS.  This is why the composite
+            watermark includes contact timestamps — contact-only changes must be detected.
+
+  - change: Billing account change
+    affected_view_column: BA_UPDATED_AT (part of RECORD_EFFECTIVE_TS)
+    result: Picked up by CUSTOMER_ACCOUNT_EXPORT watermark.
+
+  - change: New premise
+    affected_view_column: PREM_UPDATED_AT (part of RECORD_EFFECTIVE_TS)
+    result: Picked up; new premise row MERGEd.
+
+  - change: Meter swap (IS_ACTIVE toggle)
+    affected_view_column: MTR_UPDATED_AT (part of RECORD_EFFECTIVE_TS)
+    result: Picked up; new active meter MERGED; old meter IS_ACTIVE updated.
+
+# ============================================================================
+# MERGE strategy (same as initial load — idempotent)
+# ============================================================================
+merge_rules:
+  description: >
+    Identical MERGE statements to initial load.
+    The same MERGE handles both insert (new record) and update (changed record).
+    Running daily incremental after an already-current initial load is safe —
+    zero writes result if nothing has changed.
+
+# ============================================================================
+# Zero-change run behaviour
+# ============================================================================
+zero_change_run:
+  reader_result: Empty ResultSet (0 rows)
+  step_result: exitCode=COMPLETED, readCount=0, writeCount=0
+  watermark_update: Not updated (no new high-water mark to set)
+  job_status: COMPLETED
+  etl_job_run: Row written with SOURCE_ROWS_READ=0, INSERTS=0, UPDATES=0
+
+# ============================================================================
+# Concurrency guard
+# ============================================================================
+concurrency:
+  prevent_concurrent:
+    - Two DAILY_INCREMENTAL_JOBs simultaneously
+    - DAILY_INCREMENTAL_JOB while INITIAL_LOAD_JOB is RUNNING
+  returns: HTTP 409 Conflict with message identifying the conflicting job.

@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.ibm.cdp</groupId>
+        <artifactId>cdp-snowflake-oracle-loader</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>cdp-loader-api</artifactId>
+    <packaging>jar</packaging>
+    <name>CDP Loader — API + Application Entry Point</name>
+    <description>
+        Spring Boot application entry point. Exposes REST APIs for dashboard
+        operations, job triggering, watermark queries and reconciliation.
+        Includes Spring Boot Actuator health and metrics endpoints.
+    </description>
+
+    <dependencies>
+        <!-- Internal modules -->
+        <dependency>
+            <groupId>com.ibm.cdp</groupId>
+            <artifactId>cdp-loader-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.ibm.cdp</groupId>
+            <artifactId>cdp-loader-batch</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Spring Web (REST controllers) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Bean Validation (Hibernate Validator) — required by @Validated on CdpLoaderProperties -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Spring Boot Actuator -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Micrometer Prometheus registry (for future monitoring) -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Configuration processor (generates IDE hints for application.yml) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- OpenAPI / Swagger UI -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>2.5.0</version>
+        </dependency>
+
+        <!-- REST API test support -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- H2 in-memory database for unit tests (no Oracle/Snowflake required) -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Oracle JDBC is a transitive compile dependency from cdp-loader-batch.
+             Do NOT re-declare it here at test scope — that would narrow the scope
+             and prevent ojdbc11.jar from being packaged into the fat JAR. -->
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Spring Boot fat JAR — sole validated deployment target -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Flyway validate: CI gate ensures migrations match schema -->
+            <plugin>
+                <groupId>org.flywaydb</groupId>
+                <artifactId>flyway-maven-plugin</artifactId>
+                <configuration>
+                    <url>${env.CDP_ORACLE_JDBC_URL}</url>
+                    <user>${env.CDP_ORACLE_USERNAME}</user>
+                    <password>${env.CDP_ORACLE_PASSWORD}</password>
+                    <locations>
+                        <location>filesystem:${project.basedir}/../cdp-loader-batch/src/main/resources/db/migration</location>
+                    </locations>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

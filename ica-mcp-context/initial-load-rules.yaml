@@ -1,0 +1,149 @@
+# =============================================================================
+# ICA/MCP Context — Initial Load Rules
+# =============================================================================
+# Rules governing the INITIAL_LOAD_JOB execution.
+# The initial load is a current-state snapshot — it reads all existing Snowflake
+# data and MERGEs it into Oracle target tables.
+# =============================================================================
+
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+artifact: initial-load-rules
+
+job_name: INITIAL_LOAD_JOB
+
+# ============================================================================
+# Design intent
+# ============================================================================
+design:
+  nature: >
+    Current-state snapshot.  Reads all rows from all three export views.
+    Because MERGE is used, re-running is safe (idempotent).
+  existing_data_note: >
+    The Snowflake demo dataset already contains simulated daily and monthly data
+    representing a current operational state.  Initial load captures this state.
+    Scripts 12 and 13 provide post-initial incremental changes for the demo sequence.
+  watermark_treatment: >
+    Initial load uses the epoch watermark (1970-01-01) to read all records.
+    After a successful initial load, the watermark for each dataset is advanced
+    to the MAX RECORD_EFFECTIVE_TS / UPDATED_AT seen in the initial load batch.
+    Subsequent daily/monthly runs then pick up only new/changed records.
+
+# ============================================================================
+# Step execution order (guardrail H — parents before children)
+# ============================================================================
+steps:
+  - step: step1-load-customers
+    reads_from: STAGING.VW_DAILY_CUSTOMER_EXPORT
+    writes_to: TGT_CUSTOMER
+    order: 1
+    rationale: >
+      TGT_CUSTOMER is the root entity.  All other tables have FK dependencies
+      on TGT_CUSTOMER.  Must complete before account, billing, premise, or meter steps.
+    watermark_record: CUSTOMER_EXPORT
+    chunk_size: ${cdp.batch.chunk-size:500}
+
+  - step: step2-load-accounts
+    reads_from: STAGING.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT
+    writes_to: TGT_ENERGY_ACCOUNT, TGT_BILLING_ACCOUNT, TGT_PREMISE, TGT_METER
+    order: 2
+    rationale: >
+      Account view provides energy account + billing account + premise + meter
+      in a single joined row.  All four targets are written in one step.
+      CustomerAccountWriter handles the multi-table write per row.
+    watermark_record: CUSTOMER_ACCOUNT_EXPORT
+    chunk_size: ${cdp.batch.chunk-size:500}
+    dependency: step1 must be COMPLETED
+
+  - step: step3-load-usage
+    reads_from: STAGING.VW_MONTHLY_USAGE_BILLING_EXPORT
+    writes_to: TGT_MONTHLY_USAGE
+    order: 3
+    rationale: >
+      Monthly usage references ENERGY_ACCOUNT_ID (FK to TGT_ENERGY_ACCOUNT).
+      Must run after step2.
+    watermark_record: MONTHLY_USAGE_EXPORT
+    chunk_size: ${cdp.batch.chunk-size:250}
+    dependency: step2 must be COMPLETED
+
+# ============================================================================
+# MERGE strategy
+# ============================================================================
+merge_rules:
+  - entity: TGT_CUSTOMER
+    merge_key: CUSTOMER_ID
+    on_match: UPDATE all non-key columns; set UPDATED_AT = current UTC; preserve CREATED_AT
+    on_no_match: INSERT full row; CREATED_AT and UPDATED_AT = Oracle DEFAULT
+
+  - entity: TGT_ENERGY_ACCOUNT
+    merge_key: ENERGY_ACCOUNT_ID
+    on_match: UPDATE all non-key columns; set UPDATED_AT = current UTC
+    on_no_match: INSERT full row
+
+  - entity: TGT_BILLING_ACCOUNT
+    merge_key: BILLING_ACCOUNT_ID
+    on_match: UPDATE all non-key columns; set UPDATED_AT = current UTC
+    on_no_match: INSERT full row
+
+  - entity: TGT_PREMISE
+    merge_key: PREMISE_ID
+    on_match: UPDATE all non-key columns; set UPDATED_AT = current UTC
+    on_no_match: INSERT full row
+
+  - entity: TGT_METER
+    merge_key: METER_ID
+    on_match: UPDATE METER_NUMBER, METER_TYPE, INSTALL_DATE, IS_ACTIVE, SOURCE_UPDATED_AT, ETL_RUN_ID, UPDATED_AT
+    on_no_match: INSERT full row
+
+  - entity: TGT_MONTHLY_USAGE
+    merge_key: USAGE_ID
+    on_match: UPDATE all billing/usage columns; set UPDATED_AT = current UTC
+    on_no_match: INSERT full row
+
+# ============================================================================
+# Reconciliation
+# ============================================================================
+reconciliation:
+  timing: After all three steps complete successfully.
+  counts_verified:
+    - source: COUNT(*) FROM STAGING.VW_DAILY_CUSTOMER_EXPORT
+      target: COUNT(*) FROM TGT_CUSTOMER
+    - source: COUNT(*) FROM STAGING.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT
+      target: COUNT(*) FROM TGT_ENERGY_ACCOUNT
+    - source: COUNT(VALID ROWS) FROM STAGING.VW_MONTHLY_USAGE_BILLING_EXPORT
+      target: COUNT(*) FROM TGT_MONTHLY_USAGE
+  kwh_verification:
+    source: SUM(KWH_USAGE) FROM VW_MONTHLY_USAGE_BILLING_EXPORT (valid rows)
+    target: SUM(KWH_USAGE) FROM TGT_MONTHLY_USAGE
+  results_stored_in: ETL_RECONCILIATION table (V003 migration)
+
+# ============================================================================
+# Concurrency guard
+# ============================================================================
+concurrency:
+  prevent_concurrent: >
+    Only one INITIAL_LOAD_JOB may run at a time.
+    Attempting to start while another is RUNNING returns HTTP 409.
+  overlaps_blocked_with: [DAILY_INCREMENTAL_JOB, MONTHLY_USAGE_JOB]
+  implementation: JobLaunchService.checkConflict() queries ETL_JOB_RUN for RUNNING status.
+
+# ============================================================================
+# ETL_JOB_RUN row
+# ============================================================================
+job_audit:
+  start_status: STARTING → RUNNING
+  end_status_success: COMPLETED
+  end_status_partial: COMPLETED_WITH_ERRORS  # when skip limit < exhausted but some rejects occurred
+  end_status_failure: FAILED
+  metrics:
+    - SOURCE_ROWS_READ
+    - INSERTS (approximate — see merge-safety note)
+    - UPDATES (approximate)
+    - SKIPS (rejected records written to ETL_RECORD_ERROR)
+    - REJECTS
+    - ERROR_MESSAGE (first fatal error message if FAILED)
+  merge_count_note: >
+    Oracle MERGE does not directly expose insert-vs-update counts via JDBC.
+    Counts are approximated using pre-check EXISTS query or tracked via
+    Spring Batch ItemWriteListener using before/after counts.
+    Do not present approximate counts as exact in dashboards.

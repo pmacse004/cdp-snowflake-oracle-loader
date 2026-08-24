@@ -1,0 +1,287 @@
+# =============================================================================
+# ICA/MCP Context — Join Rules
+# =============================================================================
+# Documents the JOIN logic implemented in the Snowflake export views.
+# Authority: infra/snowflake/04-create-export-views.sql
+#
+# For each view, describes:
+#   - CTE structure
+#   - JOIN type and condition
+#   - Deduplication / QUALIFY logic
+#   - NULL-handling for optional relationships
+# =============================================================================
+
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+artifact: join-rules
+
+views:
+
+  # --------------------------------------------------------------------------
+  # VIEW: VW_DAILY_CUSTOMER_EXPORT
+  # Root entity: CUSTOMER.CUSTOMER  (one row per customer)
+  # --------------------------------------------------------------------------
+  - view: STAGING.VW_DAILY_CUSTOMER_EXPORT
+    root_table: CUSTOMER.CUSTOMER
+    grain: one row per CUSTOMER_ID
+    ctes:
+      - name: primary_email
+        source: CUSTOMER.CUSTOMER_CONTACT
+        filter:
+          - "CONTACT_TYPE = 'EMAIL'"
+          - "IS_PRIMARY = TRUE"
+          - "END_DATE IS NULL OR END_DATE >= CURRENT_DATE()"
+        deduplication:
+          method: QUALIFY ROW_NUMBER()
+          partition_by: CUSTOMER_ID
+          order_by: EFFECTIVE_DATE DESC
+          keep: first (most recent effective email)
+        purpose: One primary email address per customer.
+
+      - name: primary_phone
+        source: CUSTOMER.CUSTOMER_CONTACT
+        filter:
+          - "CONTACT_TYPE = 'PHONE'"
+          - "IS_PRIMARY = TRUE"
+          - "END_DATE IS NULL OR END_DATE >= CURRENT_DATE()"
+        deduplication:
+          method: QUALIFY ROW_NUMBER()
+          partition_by: CUSTOMER_ID
+          order_by: EFFECTIVE_DATE DESC
+          keep: first
+        purpose: One primary phone number per customer.
+
+      - name: cust_type_ref
+        source: REF.CODE_VALUE
+        filter:
+          - "DOMAIN = 'CUST_TYPE'"
+        deduplication: none (DOMAIN+CODE is unique by constraint)
+        purpose: Human-readable label for CUSTOMER_TYPE codes.
+
+      - name: acct_status_ref
+        source: REF.CODE_VALUE
+        filter:
+          - "DOMAIN = 'ACCT_STATUS'"
+        deduplication: none
+        purpose: Human-readable label for ACCOUNT_STATUS codes.
+
+    joins:
+      - from_alias: c (CUSTOMER.CUSTOMER)
+        to_alias: pe (primary_email)
+        type: LEFT JOIN
+        condition: "pe.CUSTOMER_ID = c.CUSTOMER_ID"
+        null_behavior: >
+          Customers without a primary email still appear.
+          EMAIL_ADDRESS and EMAIL_VERIFIED will be NULL.
+
+      - from_alias: c
+        to_alias: pp (primary_phone)
+        type: LEFT JOIN
+        condition: "pp.CUSTOMER_ID = c.CUSTOMER_ID"
+        null_behavior: >
+          PHONE_NUMBER will be NULL for customers without a primary phone.
+
+      - from_alias: c
+        to_alias: asr (acct_status_ref)
+        type: LEFT JOIN
+        condition: "asr.CODE = c.ACCOUNT_STATUS"
+        null_behavior: >
+          ACCT_STATUS_LABEL will be NULL if ACCOUNT_STATUS value not in REF.CODE_VALUE.
+
+      - from_alias: c
+        to_alias: ctr (cust_type_ref)
+        type: LEFT JOIN
+        condition: "ctr.CODE = c.CUSTOMER_TYPE"
+        null_behavior: >
+          CUST_TYPE_LABEL will be NULL if CUSTOMER_TYPE value not in REF.CODE_VALUE.
+
+    watermark:
+      column: RECORD_EFFECTIVE_TS
+      formula: >
+        GREATEST(
+          COALESCE(c.UPDATED_AT,        '1970-01-01'::TIMESTAMP_TZ),
+          COALESCE(pe.EMAIL_UPDATED_AT, '1970-01-01'::TIMESTAMP_TZ),
+          COALESCE(pp.PHONE_UPDATED_AT, '1970-01-01'::TIMESTAMP_TZ)
+        )
+      note: >
+        Advances whenever the customer row OR any contact row changes.
+        COALESCE with epoch ensures GREATEST never returns NULL.
+
+  # --------------------------------------------------------------------------
+  # VIEW: VW_DAILY_CUSTOMER_ACCOUNT_EXPORT
+  # Root entity: CUSTOMER.ENERGY_ACCOUNT  (one row per energy account)
+  # --------------------------------------------------------------------------
+  - view: STAGING.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT
+    root_table: CUSTOMER.ENERGY_ACCOUNT
+    grain: one row per ENERGY_ACCOUNT_ID
+    ctes:
+      - name: primary_email
+        source: CUSTOMER.CUSTOMER_CONTACT
+        filter: ["CONTACT_TYPE = 'EMAIL'", "IS_PRIMARY = TRUE", "END_DATE IS NULL OR END_DATE >= CURRENT_DATE()"]
+        deduplication:
+          method: QUALIFY ROW_NUMBER()
+          partition_by: CUSTOMER_ID
+          order_by: EFFECTIVE_DATE DESC
+          keep: first
+
+      - name: primary_phone
+        source: CUSTOMER.CUSTOMER_CONTACT
+        filter: ["CONTACT_TYPE = 'PHONE'", "IS_PRIMARY = TRUE", "END_DATE IS NULL OR END_DATE >= CURRENT_DATE()"]
+        deduplication:
+          method: QUALIFY ROW_NUMBER()
+          partition_by: CUSTOMER_ID
+          order_by: EFFECTIVE_DATE DESC
+          keep: first
+
+      - name: current_billing
+        source: CUSTOMER.BILLING_ACCOUNT
+        filter: ["END_DATE IS NULL OR END_DATE >= CURRENT_DATE()"]
+        deduplication:
+          method: QUALIFY ROW_NUMBER()
+          partition_by: ENERGY_ACCOUNT_ID
+          order_by: EFFECTIVE_DATE DESC
+          keep: first (most recent current billing account)
+        purpose: >
+          One billing account record per energy account.
+          Historical (ended) billing accounts are excluded from main SELECT.
+
+      - name: current_premise
+        source: SERVICE.PREMISE
+        filter: ["END_DATE IS NULL OR END_DATE >= CURRENT_DATE()"]
+        deduplication:
+          method: QUALIFY ROW_NUMBER()
+          partition_by: ENERGY_ACCOUNT_ID
+          order_by: EFFECTIVE_DATE DESC
+          keep: first (most recent current premise)
+
+      - name: active_meter
+        source: SERVICE.METER
+        filter: ["IS_ACTIVE = TRUE", "REMOVAL_DATE IS NULL OR REMOVAL_DATE >= CURRENT_DATE()"]
+        deduplication:
+          method: QUALIFY ROW_NUMBER()
+          partition_by: PREMISE_ID
+          order_by: INSTALL_DATE DESC
+          keep: first (most recently installed active meter)
+
+      - name: acct_status_ref
+        source: REF.CODE_VALUE
+        filter: ["DOMAIN = 'ACCT_STATUS'"]
+        deduplication: none
+
+      - name: cust_type_ref
+        source: REF.CODE_VALUE
+        filter: ["DOMAIN = 'CUST_TYPE'"]
+        deduplication: none
+
+    joins:
+      - from_alias: ea (CUSTOMER.ENERGY_ACCOUNT)
+        to_alias: c (CUSTOMER.CUSTOMER)
+        type: INNER JOIN
+        condition: "c.CUSTOMER_ID = ea.CUSTOMER_ID"
+        null_behavior: >
+          Energy accounts without a matching customer are excluded.
+          This is a data integrity guarantee (FK on source table).
+
+      - from_alias: c
+        to_alias: pe (primary_email)
+        type: LEFT JOIN
+        condition: "pe.CUSTOMER_ID = c.CUSTOMER_ID"
+        null_behavior: EMAIL_ADDRESS = NULL if no primary email.
+
+      - from_alias: c
+        to_alias: pp (primary_phone)
+        type: LEFT JOIN
+        condition: "pp.CUSTOMER_ID = c.CUSTOMER_ID"
+        null_behavior: PHONE_NUMBER = NULL if no primary phone.
+
+      - from_alias: ea
+        to_alias: cb (current_billing)
+        type: LEFT JOIN
+        condition: "cb.ENERGY_ACCOUNT_ID = ea.ENERGY_ACCOUNT_ID"
+        null_behavior: >
+          BILLING_ACCOUNT_ID, BILLING_ACCOUNT_NBR, BILLING_CYCLE,
+          PAYMENT_METHOD, AUTO_PAY_ENROLLED, PAPERLESS_ENROLLED = NULL
+          for energy accounts without an active billing account.
+
+      - from_alias: ea
+        to_alias: cp (current_premise)
+        type: LEFT JOIN
+        condition: "cp.ENERGY_ACCOUNT_ID = ea.ENERGY_ACCOUNT_ID"
+        null_behavior: >
+          All address/premise columns = NULL for accounts without a current premise.
+
+      - from_alias: cp
+        to_alias: am (active_meter)
+        type: LEFT JOIN
+        condition: "am.PREMISE_ID = cp.PREMISE_ID"
+        null_behavior: >
+          METER_ID, METER_NUMBER, METER_TYPE, INSTALL_DATE = NULL
+          when no active meter found for the premise.
+          Also NULL when current_premise itself is NULL (chained LEFT JOIN).
+
+      - from_alias: ea
+        to_alias: asr (acct_status_ref)
+        type: LEFT JOIN
+        condition: "asr.CODE = ea.ACCOUNT_STATUS"
+        null_behavior: ACCT_STATUS_LABEL = NULL if code not in ref table.
+
+      - from_alias: c
+        to_alias: ctr (cust_type_ref)
+        type: LEFT JOIN
+        condition: "ctr.CODE = c.CUSTOMER_TYPE"
+        null_behavior: CUST_TYPE_LABEL = NULL if code not in ref table.
+
+    watermark:
+      column: RECORD_EFFECTIVE_TS
+      formula: >
+        GREATEST(
+          COALESCE(c.UPDATED_AT,        '1970-01-01'::TIMESTAMP_TZ),
+          COALESCE(ea.UPDATED_AT,       '1970-01-01'::TIMESTAMP_TZ),
+          COALESCE(cb.BA_UPDATED_AT,    '1970-01-01'::TIMESTAMP_TZ),
+          COALESCE(cp.PREM_UPDATED_AT,  '1970-01-01'::TIMESTAMP_TZ),
+          COALESCE(am.MTR_UPDATED_AT,   '1970-01-01'::TIMESTAMP_TZ),
+          COALESCE(pe.EMAIL_UPDATED_AT, '1970-01-01'::TIMESTAMP_TZ),
+          COALESCE(pp.PHONE_UPDATED_AT, '1970-01-01'::TIMESTAMP_TZ)
+        )
+      note: >
+        Includes CUSTOMER_CONTACT timestamps so contact-only changes
+        (email/phone update) advance the watermark and trigger an incremental pick-up.
+
+  # --------------------------------------------------------------------------
+  # VIEW: VW_MONTHLY_USAGE_BILLING_EXPORT
+  # Root entity: BILLING.MONTHLY_USAGE  (one row per usage record)
+  # --------------------------------------------------------------------------
+  - view: STAGING.VW_MONTHLY_USAGE_BILLING_EXPORT
+    root_table: BILLING.MONTHLY_USAGE
+    grain: one row per USAGE_ID (business key: ENERGY_ACCOUNT_ID + BILLING_MONTH)
+    ctes:
+      - name: rate_params
+        source: REF.CODE_VALUE
+        filter: ["DOMAIN = 'RATE_PLAN'", "IS_ACTIVE = TRUE"]
+        deduplication: none (DOMAIN+CODE unique)
+        purpose: >
+          Resolves rate parameters from ATTRIBUTES VARIANT column.
+          Exposes FIXED_RATE, ENERGY_RATE_PER_KWH, DEMAND_RATE_PER_KW, TAX_RATE
+          as typed NUMBER columns using TRY_TO_DECIMAL(ATTRIBUTES[key]::STRING, p, s).
+          See TR-BILL-02 through TR-BILL-06 transformation rules.
+
+    joins:
+      - from_alias: u (BILLING.MONTHLY_USAGE)
+        to_alias: rp (rate_params)
+        type: LEFT JOIN
+        condition: "rp.RATE_PLAN_CODE = u.RATE_PLAN"
+        null_behavior: >
+          If the RATE_PLAN code is not found in REF.CODE_VALUE (DOMAIN=RATE_PLAN),
+          all rate columns (FIXED_RATE, ENERGY_RATE_PER_KWH, etc.) = NULL.
+          Calculated charges (CALC_FIXED_CHARGE, CALC_ENERGY_CHARGE, CALC_SUBTOTAL,
+          CALC_TAX_AMOUNT, CALC_TOTAL_BILLED) will also be NULL due to NULL propagation.
+          Spring Batch processor must treat NULL calculated charges as a validation
+          failure (VR-RATE-001 — missing required rate).
+          Exception: CALC_DEMAND_CHARGE = 0 when demand rate is null (ICA MU-AC-09).
+
+    watermark:
+      column: UPDATED_AT
+      note: >
+        Direct column on BILLING.MONTHLY_USAGE — not a composite.
+        Used as the watermark for MONTHLY_USAGE_EXPORT watermark record.
+        Order by: UPDATED_AT ASC, USAGE_ID ASC (stable sort for incremental).

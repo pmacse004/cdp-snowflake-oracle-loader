@@ -1,0 +1,160 @@
+# =============================================================================
+# ICA/MCP Context — Incremental Watermark Rules
+# =============================================================================
+# Defines the watermark strategy for all three incremental load datasets.
+# Guardrail: separate watermark records per dataset (not a single global mark).
+#
+# Authority: docs/guardrails section I (Watermark Design)
+# Implementation: EtlWatermarkRepository.java
+#                 ETL_WATERMARK Oracle table (V003 migration)
+# =============================================================================
+
+version: "1.0"
+context_package: cdp-snowflake-oracle-loader
+artifact: incremental-watermark-rules
+
+# ============================================================================
+# Oracle watermark storage
+# ============================================================================
+watermark_table: ETL_WATERMARK
+columns:
+  - SOURCE_NAME: VARCHAR2(100) NOT NULL PRIMARY KEY  — identifies the dataset
+  - LAST_PROCESSED_TS: TIMESTAMP  — last successfully processed timestamp
+  - LAST_PROCESSED_ID: VARCHAR2(100)  — last processed stable source ID (tie-breaking)
+  - UPDATED_AT: TIMESTAMP  — when this watermark was last updated
+
+# ============================================================================
+# Watermark records (one per dataset)
+# ============================================================================
+watermark_records:
+
+  - source_name: CUSTOMER_EXPORT
+    description: >
+      Tracks incremental processing of VW_DAILY_CUSTOMER_EXPORT.
+      Advances after each successful daily customer step commit.
+    view: STAGING.VW_DAILY_CUSTOMER_EXPORT
+    watermark_column: RECORD_EFFECTIVE_TS
+    stable_id_column: CUSTOMER_ID
+    initial_value:
+      last_processed_ts: "1970-01-01T00:00:00Z"
+      last_processed_id: ""
+      note: >
+        First run reads all records (epoch start → picks up everything).
+        Documented minimum — never hardcode in application logic.
+    incremental_condition: >
+      WHERE (RECORD_EFFECTIVE_TS > :lastTimestamp)
+         OR (RECORD_EFFECTIVE_TS = :lastTimestamp AND CUSTOMER_ID > :lastSourceId)
+      ORDER BY RECORD_EFFECTIVE_TS ASC, CUSTOMER_ID ASC
+    update_timing: >
+      After successful Oracle commit for the customer step.
+      Set to MAX(RECORD_EFFECTIVE_TS) of the processed batch.
+      Also persist CUSTOMER_ID of the last processed row for tie-breaking.
+    rerun_safety: >
+      Rerun with no new records returns 0 rows from view.
+      Job completes COMPLETED with 0 writes.  Watermark unchanged.
+
+  - source_name: CUSTOMER_ACCOUNT_EXPORT
+    description: >
+      Tracks incremental processing of VW_DAILY_CUSTOMER_ACCOUNT_EXPORT.
+      This view is account-grain (rooted at ENERGY_ACCOUNT).
+      The composite watermark advances when any contributing table changes.
+    view: STAGING.VW_DAILY_CUSTOMER_ACCOUNT_EXPORT
+    watermark_column: RECORD_EFFECTIVE_TS
+    stable_id_column: ENERGY_ACCOUNT_ID
+    initial_value:
+      last_processed_ts: "1970-01-01T00:00:00Z"
+      last_processed_id: ""
+    incremental_condition: >
+      WHERE (RECORD_EFFECTIVE_TS > :lastTimestamp)
+         OR (RECORD_EFFECTIVE_TS = :lastTimestamp AND ENERGY_ACCOUNT_ID > :lastSourceId)
+      ORDER BY RECORD_EFFECTIVE_TS ASC, ENERGY_ACCOUNT_ID ASC
+    update_timing: >
+      After successful Oracle commit for each account/premise/meter step.
+      Single shared watermark for the account-grain view.
+    important: >
+      Do NOT use CUSTOMER.UPDATED_AT alone as the watermark.
+      The composite RECORD_EFFECTIVE_TS includes contact, billing account,
+      premise, and meter timestamps — use RECORD_EFFECTIVE_TS from the view.
+
+  - source_name: MONTHLY_USAGE_EXPORT
+    description: >
+      Tracks incremental processing of VW_MONTHLY_USAGE_BILLING_EXPORT.
+      Uses BILLING.MONTHLY_USAGE.UPDATED_AT directly (no composite join).
+    view: STAGING.VW_MONTHLY_USAGE_BILLING_EXPORT
+    watermark_column: UPDATED_AT
+    stable_id_column: USAGE_ID
+    initial_value:
+      last_processed_ts: "1970-01-01T00:00:00Z"
+      last_processed_id: ""
+    incremental_condition: >
+      WHERE (UPDATED_AT > :lastTimestamp)
+         OR (UPDATED_AT = :lastTimestamp AND USAGE_ID > :lastSourceId)
+      ORDER BY UPDATED_AT ASC, USAGE_ID ASC
+    update_timing: >
+      After successful Oracle commit for the monthly usage step.
+
+# ============================================================================
+# Composite watermark comparator boundary rules
+# ============================================================================
+boundary_rules:
+
+  - rule: WM-BOUND-01
+    description: Epoch start (first run)
+    condition: last_processed_ts = 1970-01-01T00:00:00Z AND last_processed_id = ''
+    behaviour: >
+      All records qualify because RECORD_EFFECTIVE_TS > epoch.
+      This is equivalent to a full initial snapshot.
+      Initial load jobs call this on all three watermark records.
+
+  - rule: WM-BOUND-02
+    description: Equal timestamp, different ID (tie-breaking)
+    condition: RECORD_EFFECTIVE_TS = :lastTimestamp AND STABLE_ID > :lastSourceId
+    behaviour: >
+      Picks up records updated at the exact same millisecond as the last
+      processed record but with a lexicographically greater ID.
+      Prevents gaps when multiple records share the same timestamp.
+
+  - rule: WM-BOUND-03
+    description: Rerun with no changes
+    condition: No records satisfy the incremental condition
+    behaviour: >
+      Reader returns empty result set.
+      Step completes with readCount=0, writeCount=0.
+      Job status = COMPLETED (not an error).
+      Watermark is NOT updated (no new high-water mark to record).
+
+  - rule: WM-BOUND-04
+    description: Watermark update after partial commit (chunk failure mid-job)
+    condition: Job fails after some chunks committed but before all chunks finish
+    behaviour: >
+      Watermark is stored after each successful step commit, NOT per-chunk.
+      On restart, the job re-reads from the last saved watermark.
+      Records in already-committed chunks are re-processed via MERGE (idempotent).
+      No data is lost or double-counted.
+    implementation_note: >
+      EtlWatermarkRepository.updateWatermark() is called in StepExecutionListener.afterStep()
+      only when step exit status is COMPLETED.
+
+  - rule: WM-BOUND-05
+    description: Watermark must not advance past rejected records
+    condition: Some records in current batch were rejected (written to ETL_RECORD_ERROR)
+    behaviour: >
+      Watermark advances to the MAX timestamp of successfully processed records only.
+      Rejected records do not advance the watermark.
+      If ALL records in a batch are rejected, watermark is not advanced.
+    implementation_note: >
+      Spring Batch skip mechanism: rejected records are skipped before the writer.
+      Writer only receives valid records; high-water mark is computed from writer input.
+
+# ============================================================================
+# ORDER BY guarantee
+# ============================================================================
+sort_guarantee:
+  rule: The incremental query MUST include ORDER BY watermark_column ASC, stable_id ASC.
+  reason: >
+    Without deterministic sort, the watermark could advance past unread records
+    when a page boundary falls in a tie-group.
+    JDBC cursor readers must not rely on implicit ordering from Snowflake.
+  snowflake_note: >
+    Snowflake does not guarantee row order without ORDER BY.
+    Always specify ORDER BY even for cursor-based reads.
