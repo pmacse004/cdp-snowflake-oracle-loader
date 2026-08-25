@@ -1,0 +1,635 @@
+-- =============================================================================
+-- Demo Daily Load Simulation — 10 Rounds
+-- =============================================================================
+-- Run as: CDP_ADMIN_ROLE
+-- Database: CDP_UTIL_DB
+-- Warehouse: CDP_LOADER_WH
+--
+-- PURPOSE
+--   Populates Snowflake source tables with 10 rounds of daily change data:
+--     - INSERTs  : New customers + energy accounts (picked up as new rows)
+--     - UPDATEs  : Name, email, phone, address changes (picked up via watermark)
+--     - Rejections: Records that will fail Spring Batch validation rules
+--
+-- HOW TO USE
+--   1. Run this entire script once in a Snowflake worksheet.
+--   2. After each "-- ===== ROUND N =====" block, trigger the daily job:
+--         POST http://localhost:8080/api/jobs/daily
+--   3. Or run all 10 rounds at once and trigger the job once to pick up all.
+--
+-- REJECTION SCENARIOS INJECTED (per round)
+--   REJ-D1  FIRST_NAME is blank string  → VR-CUST-001 (required field empty)
+--   REJ-D2  EMAIL format invalid        → VR-CONT-001 (no @ symbol)
+--
+-- ROUND NAMING
+--   Customers:      CUST-SIM-R{N}-{SEQ}
+--   Energy accounts: EA-SIM-R{N}-{SEQ}
+--   Contacts:       CC-SIM-R{N}-{SEQ}
+--
+-- IDEMPOTENCY
+--   All INSERTs use INSERT INTO ... SELECT ... WHERE NOT EXISTS
+--   so rerunning is safe.
+-- =============================================================================
+
+USE ROLE CDP_ADMIN_ROLE;
+USE DATABASE CDP_UTIL_DB;
+USE WAREHOUSE CDP_LOADER_WH;
+
+-- =============================================================================
+-- ===== ROUND 1: New customers + accounts + a rejection record ================
+-- =============================================================================
+
+-- 1a. New customers (valid)
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CUST-SIM-R1-001', 'James',    'Harrington', 'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R1-002', 'Priya',    'Nair',        'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R1-003', 'Carlos',   'Mendoza',     'ACTIVE', 'COMMERCIAL',  'EN'),
+    ('CUST-SIM-R1-004', 'Fatima',   'Al-Hassan',   'ACTIVE', 'RESIDENTIAL', 'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = v.col1);
+
+-- 1b. Rejection: blank FIRST_NAME — will be rejected by VR-CUST-001
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES ('CUST-SIM-R1-REJ', '', 'Rejected', 'ACTIVE', 'RESIDENTIAL', 'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = 'CUST-SIM-R1-REJ');
+
+-- 1c. Email contacts for valid customers
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, TRUE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CC-SIM-R1-001E', 'CUST-SIM-R1-001', 'EMAIL', 'james.harrington@demo.com'),
+    ('CC-SIM-R1-002E', 'CUST-SIM-R1-002', 'EMAIL', 'priya.nair@demo.com'),
+    ('CC-SIM-R1-003E', 'CUST-SIM-R1-003', 'EMAIL', 'carlos.mendoza@demo.com'),
+    ('CC-SIM-R1-004E', 'CUST-SIM-R1-004', 'EMAIL', 'fatima.alhassan@demo.com')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = v.col1);
+
+-- 1d. Rejection: invalid email (no @) — will be rejected by VR-CONT-001
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, FALSE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES ('CC-SIM-R1-REJE', 'CUST-SIM-R1-001', 'EMAIL', 'not-a-valid-email-address')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = 'CC-SIM-R1-REJE');
+
+-- 1e. Energy accounts
+INSERT INTO CUSTOMER.ENERGY_ACCOUNT
+    (ENERGY_ACCOUNT_ID, CUSTOMER_ID, ACCOUNT_NUMBER, ACCOUNT_STATUS,
+     SERVICE_TYPE, RATE_CLASS, OPEN_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('EA-SIM-R1-001', 'CUST-SIM-R1-001', 'ACCT-SIM-R1-001', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R1-002', 'CUST-SIM-R1-002', 'ACCT-SIM-R1-002', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R1-003', 'CUST-SIM-R1-003', 'ACCT-SIM-R1-003', 'ACTIVE', 'ELECTRIC', 'COMMERCIAL'),
+    ('EA-SIM-R1-004', 'CUST-SIM-R1-004', 'ACCT-SIM-R1-004', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.ENERGY_ACCOUNT WHERE ENERGY_ACCOUNT_ID = v.col1);
+
+-- =============================================================================
+-- ===== ROUND 2: Updates to existing customers + new inserts ==================
+-- =============================================================================
+
+-- 2a. New customers
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CUST-SIM-R2-001', 'Amara',    'Osei',      'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R2-002', 'Thomas',   'Bergmann',  'ACTIVE', 'COMMERCIAL',  'EN'),
+    ('CUST-SIM-R2-003', 'Yuki',     'Tanaka',    'ACTIVE', 'RESIDENTIAL', 'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = v.col1);
+
+-- 2b. Update Round 1 customers — name corrections (advances watermark)
+UPDATE CUSTOMER.CUSTOMER
+SET LAST_NAME = 'Harrington-Smith', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CUSTOMER_ID = 'CUST-SIM-R1-001';
+
+UPDATE CUSTOMER.CUSTOMER
+SET PREFERRED_LANGUAGE = 'FR', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CUSTOMER_ID = 'CUST-SIM-R1-002';
+
+-- 2c. Email contacts for new customers
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, TRUE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CC-SIM-R2-001E', 'CUST-SIM-R2-001', 'EMAIL', 'amara.osei@demo.com'),
+    ('CC-SIM-R2-002E', 'CUST-SIM-R2-002', 'EMAIL', 'thomas.bergmann@demo.com'),
+    ('CC-SIM-R2-003E', 'CUST-SIM-R2-003', 'EMAIL', 'yuki.tanaka@demo.com')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = v.col1);
+
+-- 2d. Energy accounts
+INSERT INTO CUSTOMER.ENERGY_ACCOUNT
+    (ENERGY_ACCOUNT_ID, CUSTOMER_ID, ACCOUNT_NUMBER, ACCOUNT_STATUS,
+     SERVICE_TYPE, RATE_CLASS, OPEN_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('EA-SIM-R2-001', 'CUST-SIM-R2-001', 'ACCT-SIM-R2-001', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R2-002', 'CUST-SIM-R2-002', 'ACCT-SIM-R2-002', 'ACTIVE', 'ELECTRIC', 'COMMERCIAL'),
+    ('EA-SIM-R2-003', 'CUST-SIM-R2-003', 'ACCT-SIM-R2-003', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.ENERGY_ACCOUNT WHERE ENERGY_ACCOUNT_ID = v.col1);
+
+-- =============================================================================
+-- ===== ROUND 3: Phone + email updates + account closure ======================
+-- =============================================================================
+
+-- 3a. New customers
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CUST-SIM-R3-001', 'Lucia',    'Ferreira',  'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R3-002', 'Raj',      'Patel',     'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R3-003', 'Emma',     'Lindqvist', 'ACTIVE', 'RESIDENTIAL', 'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = v.col1);
+
+-- 3b. Update email for Round 2 customers
+UPDATE CUSTOMER.CUSTOMER_CONTACT
+SET CONTACT_VALUE = 'amara.osei.updated@demo.com', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CONTACT_ID = 'CC-SIM-R2-001E';
+
+UPDATE CUSTOMER.CUSTOMER_CONTACT
+SET CONTACT_VALUE = 'yuki.tanaka.new@demo.com', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CONTACT_ID = 'CC-SIM-R2-003E';
+
+-- 3c. Add phone contacts
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, FALSE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CC-SIM-R1-001P', 'CUST-SIM-R1-001', 'PHONE', '555-1001'),
+    ('CC-SIM-R1-002P', 'CUST-SIM-R1-002', 'PHONE', '555-1002'),
+    ('CC-SIM-R2-001P', 'CUST-SIM-R2-001', 'PHONE', '555-2001')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = v.col1);
+
+-- 3d. Close an energy account (UPDATED_AT advances → picked up by daily job)
+UPDATE CUSTOMER.ENERGY_ACCOUNT
+SET ACCOUNT_STATUS = 'CLOSED', CLOSE_DATE = CURRENT_DATE(),
+    UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE ENERGY_ACCOUNT_ID = 'EA-SIM-R1-003';
+
+-- 3e. Email + energy accounts for new Round 3 customers
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, TRUE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CC-SIM-R3-001E', 'CUST-SIM-R3-001', 'EMAIL', 'lucia.ferreira@demo.com'),
+    ('CC-SIM-R3-002E', 'CUST-SIM-R3-002', 'EMAIL', 'raj.patel@demo.com'),
+    ('CC-SIM-R3-003E', 'CUST-SIM-R3-003', 'EMAIL', 'emma.lindqvist@demo.com')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = v.col1);
+
+INSERT INTO CUSTOMER.ENERGY_ACCOUNT
+    (ENERGY_ACCOUNT_ID, CUSTOMER_ID, ACCOUNT_NUMBER, ACCOUNT_STATUS,
+     SERVICE_TYPE, RATE_CLASS, OPEN_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('EA-SIM-R3-001', 'CUST-SIM-R3-001', 'ACCT-SIM-R3-001', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R3-002', 'CUST-SIM-R3-002', 'ACCT-SIM-R3-002', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R3-003', 'CUST-SIM-R3-003', 'ACCT-SIM-R3-003', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.ENERGY_ACCOUNT WHERE ENERGY_ACCOUNT_ID = v.col1);
+
+-- =============================================================================
+-- ===== ROUND 4: Bulk name updates + new batch ================================
+-- =============================================================================
+
+-- 4a. New customers
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CUST-SIM-R4-001', 'Noah',      'Williams',  'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R4-002', 'Aisha',     'Diallo',    'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R4-003', 'Henrik',    'Larsen',    'ACTIVE', 'COMMERCIAL',  'EN'),
+    ('CUST-SIM-R4-004', 'Mei',       'Zhang',     'ACTIVE', 'RESIDENTIAL', 'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = v.col1);
+
+-- 4b. Rejection: LAST_NAME blank
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES ('CUST-SIM-R4-REJ', 'Valid', '', 'ACTIVE', 'RESIDENTIAL', 'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = 'CUST-SIM-R4-REJ');
+
+-- 4c. Bulk update: inactivate Round 3 customers
+UPDATE CUSTOMER.CUSTOMER
+SET ACCOUNT_STATUS = 'INACTIVE', STATUS_REASON = 'MOVED_AWAY',
+    UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CUSTOMER_ID IN ('CUST-SIM-R3-001', 'CUST-SIM-R3-002');
+
+-- 4d. Emails + accounts for Round 4
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, TRUE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CC-SIM-R4-001E', 'CUST-SIM-R4-001', 'EMAIL', 'noah.williams@demo.com'),
+    ('CC-SIM-R4-002E', 'CUST-SIM-R4-002', 'EMAIL', 'aisha.diallo@demo.com'),
+    ('CC-SIM-R4-003E', 'CUST-SIM-R4-003', 'EMAIL', 'henrik.larsen@demo.com'),
+    ('CC-SIM-R4-004E', 'CUST-SIM-R4-004', 'EMAIL', 'mei.zhang@demo.com')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = v.col1);
+
+INSERT INTO CUSTOMER.ENERGY_ACCOUNT
+    (ENERGY_ACCOUNT_ID, CUSTOMER_ID, ACCOUNT_NUMBER, ACCOUNT_STATUS,
+     SERVICE_TYPE, RATE_CLASS, OPEN_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('EA-SIM-R4-001', 'CUST-SIM-R4-001', 'ACCT-SIM-R4-001', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R4-002', 'CUST-SIM-R4-002', 'ACCT-SIM-R4-002', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R4-003', 'CUST-SIM-R4-003', 'ACCT-SIM-R4-003', 'ACTIVE', 'ELECTRIC', 'COMMERCIAL'),
+    ('EA-SIM-R4-004', 'CUST-SIM-R4-004', 'ACCT-SIM-R4-004', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.ENERGY_ACCOUNT WHERE ENERGY_ACCOUNT_ID = v.col1);
+
+-- =============================================================================
+-- ===== ROUND 5: Status changes + phone updates ===============================
+-- =============================================================================
+
+-- 5a. New customers
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CUST-SIM-R5-001', 'Sofia',     'Rossi',     'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R5-002', 'Daniel',    'Kim',       'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R5-003', 'Olga',      'Ivanova',   'ACTIVE', 'RESIDENTIAL', 'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = v.col1);
+
+-- 5b. Update phone numbers for Round 4 customers
+UPDATE CUSTOMER.CUSTOMER_CONTACT
+SET CONTACT_VALUE = '555-4001-UPD', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CONTACT_ID = 'CC-SIM-R4-001E';
+
+UPDATE CUSTOMER.CUSTOMER_CONTACT
+SET CONTACT_VALUE = '555-4002-UPD', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CONTACT_ID = 'CC-SIM-R4-002E';
+
+-- 5c. Re-activate previously inactivated customers
+UPDATE CUSTOMER.CUSTOMER
+SET ACCOUNT_STATUS = 'ACTIVE', STATUS_REASON = NULL,
+    UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CUSTOMER_ID = 'CUST-SIM-R3-001';
+
+-- 5d. Emails + accounts
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, TRUE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CC-SIM-R5-001E', 'CUST-SIM-R5-001', 'EMAIL', 'sofia.rossi@demo.com'),
+    ('CC-SIM-R5-002E', 'CUST-SIM-R5-002', 'EMAIL', 'daniel.kim@demo.com'),
+    ('CC-SIM-R5-003E', 'CUST-SIM-R5-003', 'EMAIL', 'olga.ivanova@demo.com')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = v.col1);
+
+INSERT INTO CUSTOMER.ENERGY_ACCOUNT
+    (ENERGY_ACCOUNT_ID, CUSTOMER_ID, ACCOUNT_NUMBER, ACCOUNT_STATUS,
+     SERVICE_TYPE, RATE_CLASS, OPEN_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('EA-SIM-R5-001', 'CUST-SIM-R5-001', 'ACCT-SIM-R5-001', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R5-002', 'CUST-SIM-R5-002', 'ACCT-SIM-R5-002', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R5-003', 'CUST-SIM-R5-003', 'ACCT-SIM-R5-003', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.ENERGY_ACCOUNT WHERE ENERGY_ACCOUNT_ID = v.col1);
+
+-- =============================================================================
+-- ===== ROUND 6: Mixed inserts + email verification updates ===================
+-- =============================================================================
+
+-- 6a. New customers
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CUST-SIM-R6-001', 'Kwame',     'Asante',    'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R6-002', 'Ingrid',    'Holt',      'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R6-003', 'Arjun',     'Sharma',    'ACTIVE', 'COMMERCIAL',  'EN'),
+    ('CUST-SIM-R6-004', 'Claire',    'Dubois',    'ACTIVE', 'RESIDENTIAL', 'FR')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = v.col1);
+
+-- 6b. Rejection: invalid email format
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, FALSE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES ('CC-SIM-R6-REJE', 'CUST-SIM-R5-001', 'EMAIL', 'not.an.email')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = 'CC-SIM-R6-REJE');
+
+-- 6c. Verify previously unverified emails
+UPDATE CUSTOMER.CUSTOMER_CONTACT
+SET IS_VERIFIED = TRUE, UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CONTACT_ID IN ('CC-SIM-R1-001P', 'CC-SIM-R1-002P', 'CC-SIM-R2-001P');
+
+-- 6d. Emails + accounts
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, TRUE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CC-SIM-R6-001E', 'CUST-SIM-R6-001', 'EMAIL', 'kwame.asante@demo.com'),
+    ('CC-SIM-R6-002E', 'CUST-SIM-R6-002', 'EMAIL', 'ingrid.holt@demo.com'),
+    ('CC-SIM-R6-003E', 'CUST-SIM-R6-003', 'EMAIL', 'arjun.sharma@demo.com'),
+    ('CC-SIM-R6-004E', 'CUST-SIM-R6-004', 'EMAIL', 'claire.dubois@demo.com')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = v.col1);
+
+INSERT INTO CUSTOMER.ENERGY_ACCOUNT
+    (ENERGY_ACCOUNT_ID, CUSTOMER_ID, ACCOUNT_NUMBER, ACCOUNT_STATUS,
+     SERVICE_TYPE, RATE_CLASS, OPEN_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('EA-SIM-R6-001', 'CUST-SIM-R6-001', 'ACCT-SIM-R6-001', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R6-002', 'CUST-SIM-R6-002', 'ACCT-SIM-R6-002', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R6-003', 'CUST-SIM-R6-003', 'ACCT-SIM-R6-003', 'ACTIVE', 'ELECTRIC', 'COMMERCIAL'),
+    ('EA-SIM-R6-004', 'CUST-SIM-R6-004', 'ACCT-SIM-R6-004', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.ENERGY_ACCOUNT WHERE ENERGY_ACCOUNT_ID = v.col1);
+
+-- =============================================================================
+-- ===== ROUND 7: Surname changes + second accounts ============================
+-- =============================================================================
+
+-- 7a. New customers
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CUST-SIM-R7-001', 'Ravi',      'Krishnan',  'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R7-002', 'Nadia',     'Petrov',    'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R7-003', 'Liam',      'O''Brien',  'ACTIVE', 'RESIDENTIAL', 'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = v.col1);
+
+-- 7b. Marriage surname changes for Round 5 customers
+UPDATE CUSTOMER.CUSTOMER
+SET LAST_NAME = 'Rossi-Bianchi', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CUSTOMER_ID = 'CUST-SIM-R5-001';
+
+UPDATE CUSTOMER.CUSTOMER
+SET LAST_NAME = 'Kim-Park', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CUSTOMER_ID = 'CUST-SIM-R5-002';
+
+-- 7c. Add second energy accounts for Round 6 customers
+INSERT INTO CUSTOMER.ENERGY_ACCOUNT
+    (ENERGY_ACCOUNT_ID, CUSTOMER_ID, ACCOUNT_NUMBER, ACCOUNT_STATUS,
+     SERVICE_TYPE, RATE_CLASS, OPEN_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('EA-SIM-R7-B01', 'CUST-SIM-R6-001', 'ACCT-SIM-R7-B01', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R7-B02', 'CUST-SIM-R6-003', 'ACCT-SIM-R7-B02', 'ACTIVE', 'ELECTRIC', 'COMMERCIAL')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.ENERGY_ACCOUNT WHERE ENERGY_ACCOUNT_ID = v.col1);
+
+-- 7d. Emails + accounts for Round 7
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, TRUE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CC-SIM-R7-001E', 'CUST-SIM-R7-001', 'EMAIL', 'ravi.krishnan@demo.com'),
+    ('CC-SIM-R7-002E', 'CUST-SIM-R7-002', 'EMAIL', 'nadia.petrov@demo.com'),
+    ('CC-SIM-R7-003E', 'CUST-SIM-R7-003', 'EMAIL', 'liam.obrien@demo.com')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = v.col1);
+
+INSERT INTO CUSTOMER.ENERGY_ACCOUNT
+    (ENERGY_ACCOUNT_ID, CUSTOMER_ID, ACCOUNT_NUMBER, ACCOUNT_STATUS,
+     SERVICE_TYPE, RATE_CLASS, OPEN_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('EA-SIM-R7-001', 'CUST-SIM-R7-001', 'ACCT-SIM-R7-001', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R7-002', 'CUST-SIM-R7-002', 'ACCT-SIM-R7-002', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R7-003', 'CUST-SIM-R7-003', 'ACCT-SIM-R7-003', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.ENERGY_ACCOUNT WHERE ENERGY_ACCOUNT_ID = v.col1);
+
+-- =============================================================================
+-- ===== ROUND 8: Commercial customer batch + rejections =======================
+-- =============================================================================
+
+-- 8a. New commercial customers
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CUST-SIM-R8-001', 'Global',    'Retail Co',  'ACTIVE', 'COMMERCIAL', 'EN'),
+    ('CUST-SIM-R8-002', 'Metro',     'Office Ltd', 'ACTIVE', 'COMMERCIAL', 'EN'),
+    ('CUST-SIM-R8-003', 'Sunrise',   'Bakery',     'ACTIVE', 'COMMERCIAL', 'EN'),
+    ('CUST-SIM-R8-004', 'Pearl',     'Clinic',     'ACTIVE', 'COMMERCIAL', 'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = v.col1);
+
+-- 8b. Rejection: blank FIRST_NAME for commercial customer
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES ('CUST-SIM-R8-REJ', '', 'Bad Corp', 'ACTIVE', 'COMMERCIAL', 'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = 'CUST-SIM-R8-REJ');
+
+-- 8c. Update rate class for Round 7 commercial accounts
+UPDATE CUSTOMER.ENERGY_ACCOUNT
+SET RATE_CLASS = 'LARGE_COMMERCIAL', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE ENERGY_ACCOUNT_ID IN ('EA-SIM-R7-B02');
+
+-- 8d. Emails + accounts for Round 8
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, TRUE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CC-SIM-R8-001E', 'CUST-SIM-R8-001', 'EMAIL', 'info@globalretail.demo.com'),
+    ('CC-SIM-R8-002E', 'CUST-SIM-R8-002', 'EMAIL', 'billing@metrooffice.demo.com'),
+    ('CC-SIM-R8-003E', 'CUST-SIM-R8-003', 'EMAIL', 'accounts@sunrise-bakery.demo.com'),
+    ('CC-SIM-R8-004E', 'CUST-SIM-R8-004', 'EMAIL', 'finance@pearlclinic.demo.com')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = v.col1);
+
+INSERT INTO CUSTOMER.ENERGY_ACCOUNT
+    (ENERGY_ACCOUNT_ID, CUSTOMER_ID, ACCOUNT_NUMBER, ACCOUNT_STATUS,
+     SERVICE_TYPE, RATE_CLASS, OPEN_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('EA-SIM-R8-001', 'CUST-SIM-R8-001', 'ACCT-SIM-R8-001', 'ACTIVE', 'ELECTRIC', 'COMMERCIAL'),
+    ('EA-SIM-R8-002', 'CUST-SIM-R8-002', 'ACCT-SIM-R8-002', 'ACTIVE', 'ELECTRIC', 'COMMERCIAL'),
+    ('EA-SIM-R8-003', 'CUST-SIM-R8-003', 'ACCT-SIM-R8-003', 'ACTIVE', 'ELECTRIC', 'COMMERCIAL'),
+    ('EA-SIM-R8-004', 'CUST-SIM-R8-004', 'ACCT-SIM-R8-004', 'ACTIVE', 'ELECTRIC', 'COMMERCIAL')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.ENERGY_ACCOUNT WHERE ENERGY_ACCOUNT_ID = v.col1);
+
+-- =============================================================================
+-- ===== ROUND 9: Multi-account updates + address changes ======================
+-- =============================================================================
+
+-- 9a. New customers
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CUST-SIM-R9-001', 'Marcus',    'Webb',       'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R9-002', 'Hana',      'Suzuki',     'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R9-003', 'Leila',     'Mansouri',   'ACTIVE', 'RESIDENTIAL', 'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = v.col1);
+
+-- 9b. Mass email update for Round 8 commercial customers
+UPDATE CUSTOMER.CUSTOMER_CONTACT
+SET CONTACT_VALUE = 'billing@globalretail-updated.demo.com', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CONTACT_ID = 'CC-SIM-R8-001E';
+
+UPDATE CUSTOMER.CUSTOMER_CONTACT
+SET CONTACT_VALUE = 'newbilling@metrooffice.demo.com', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CONTACT_ID = 'CC-SIM-R8-002E';
+
+-- 9c. Suspend commercial accounts
+UPDATE CUSTOMER.ENERGY_ACCOUNT
+SET ACCOUNT_STATUS = 'SUSPENDED', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE ENERGY_ACCOUNT_ID IN ('EA-SIM-R8-003', 'EA-SIM-R8-004');
+
+-- 9d. Emails + accounts for Round 9
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, TRUE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CC-SIM-R9-001E', 'CUST-SIM-R9-001', 'EMAIL', 'marcus.webb@demo.com'),
+    ('CC-SIM-R9-002E', 'CUST-SIM-R9-002', 'EMAIL', 'hana.suzuki@demo.com'),
+    ('CC-SIM-R9-003E', 'CUST-SIM-R9-003', 'EMAIL', 'leila.mansouri@demo.com')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = v.col1);
+
+INSERT INTO CUSTOMER.ENERGY_ACCOUNT
+    (ENERGY_ACCOUNT_ID, CUSTOMER_ID, ACCOUNT_NUMBER, ACCOUNT_STATUS,
+     SERVICE_TYPE, RATE_CLASS, OPEN_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('EA-SIM-R9-001', 'CUST-SIM-R9-001', 'ACCT-SIM-R9-001', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R9-002', 'CUST-SIM-R9-002', 'ACCT-SIM-R9-002', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R9-003', 'CUST-SIM-R9-003', 'ACCT-SIM-R9-003', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.ENERGY_ACCOUNT WHERE ENERGY_ACCOUNT_ID = v.col1);
+
+-- =============================================================================
+-- ===== ROUND 10: Final batch — inserts + updates + two rejections ============
+-- =============================================================================
+
+-- 10a. New customers
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CUST-SIM-R10-001', 'Oscar',   'Henriksen', 'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R10-002', 'Valentina','Cruz',     'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R10-003', 'Bongani', 'Dlamini',  'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R10-004', 'Mei-Ling','Chen',      'ACTIVE', 'RESIDENTIAL', 'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = v.col1);
+
+-- 10b. Rejection 1: blank FIRST_NAME
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES ('CUST-SIM-R10-RJ1', '', 'BlankName', 'ACTIVE', 'RESIDENTIAL', 'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = 'CUST-SIM-R10-RJ1');
+
+-- 10c. Rejection 2: invalid email
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, FALSE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES ('CC-SIM-R10-RJE', 'CUST-SIM-R9-001', 'EMAIL', 'invalidemail.nodomain')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = 'CC-SIM-R10-RJE');
+
+-- 10d. Final wave of updates across all rounds
+UPDATE CUSTOMER.CUSTOMER
+SET PREFERRED_LANGUAGE = 'ES', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CUSTOMER_ID IN ('CUST-SIM-R7-001', 'CUST-SIM-R7-002');
+
+UPDATE CUSTOMER.ENERGY_ACCOUNT
+SET ACCOUNT_STATUS = 'ACTIVE', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE ENERGY_ACCOUNT_ID IN ('EA-SIM-R8-003', 'EA-SIM-R8-004');
+
+-- 10e. Emails + accounts for Round 10
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, TRUE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CC-SIM-R10-001E', 'CUST-SIM-R10-001', 'EMAIL', 'oscar.henriksen@demo.com'),
+    ('CC-SIM-R10-002E', 'CUST-SIM-R10-002', 'EMAIL', 'valentina.cruz@demo.com'),
+    ('CC-SIM-R10-003E', 'CUST-SIM-R10-003', 'EMAIL', 'bongani.dlamini@demo.com'),
+    ('CC-SIM-R10-004E', 'CUST-SIM-R10-004', 'EMAIL', 'meiling.chen@demo.com')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = v.col1);
+
+INSERT INTO CUSTOMER.ENERGY_ACCOUNT
+    (ENERGY_ACCOUNT_ID, CUSTOMER_ID, ACCOUNT_NUMBER, ACCOUNT_STATUS,
+     SERVICE_TYPE, RATE_CLASS, OPEN_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('EA-SIM-R10-001', 'CUST-SIM-R10-001', 'ACCT-SIM-R10-001', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R10-002', 'CUST-SIM-R10-002', 'ACCT-SIM-R10-002', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R10-003', 'CUST-SIM-R10-003', 'ACCT-SIM-R10-003', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL'),
+    ('EA-SIM-R10-004', 'CUST-SIM-R10-004', 'ACCT-SIM-R10-004', 'ACTIVE', 'ELECTRIC', 'RESIDENTIAL')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.ENERGY_ACCOUNT WHERE ENERGY_ACCOUNT_ID = v.col1);
+
+-- =============================================================================
+-- Verification: count what was inserted across all 10 rounds
+-- =============================================================================
+SELECT 'Simulation customers inserted' AS label,
+       COUNT(*) AS cnt
+FROM CUSTOMER.CUSTOMER
+WHERE CUSTOMER_ID LIKE 'CUST-SIM-%'
+UNION ALL
+SELECT 'Simulation energy accounts inserted',
+       COUNT(*)
+FROM CUSTOMER.ENERGY_ACCOUNT
+WHERE ENERGY_ACCOUNT_ID LIKE 'EA-SIM-%'
+UNION ALL
+SELECT 'Simulation contacts inserted',
+       COUNT(*)
+FROM CUSTOMER.CUSTOMER_CONTACT
+WHERE CONTACT_ID LIKE 'CC-SIM-%'
+ORDER BY 1;
