@@ -1,0 +1,77 @@
+-- =============================================================================
+-- Daily Load Simulation — Round 12
+-- =============================================================================
+-- Run as: CDP_ADMIN_ROLE  |  Database: CDP_UTIL_DB  |  Warehouse: CDP_LOADER_WH
+--
+-- SCENARIO  Solar net-metering customers enrolled + status updates across cohorts
+-- REJECTION REJ-D1: blank FIRST_NAME (VR-CUST-001)
+-- TRIGGER   POST http://localhost:8080/api/jobs/daily
+-- PREREQUISITE  Round 11 (daily-round-11.sql) must have been run.
+-- =============================================================================
+
+USE ROLE CDP_ADMIN_ROLE;
+USE DATABASE CDP_UTIL_DB;
+USE WAREHOUSE CDP_LOADER_WH;
+
+-- 12a. New solar customers
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CUST-SIM-R12-001', 'Amelia',  'Johansson',  'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R12-002', 'Ibrahim', 'Al-Farsi',   'ACTIVE', 'RESIDENTIAL', 'EN'),
+    ('CUST-SIM-R12-003', 'Chloe',   'Beaumont',   'ACTIVE', 'RESIDENTIAL', 'FR'),
+    ('CUST-SIM-R12-004', 'Yusuf',   'Adeyemi',    'ACTIVE', 'COMMERCIAL',  'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = v.col1);
+
+-- 12b. Rejection: blank FIRST_NAME
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES ('CUST-SIM-R12-REJ', '', 'Unnamed', 'ACTIVE', 'RESIDENTIAL', 'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = 'CUST-SIM-R12-REJ');
+
+-- 12c. Email contacts
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, TRUE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CC-SIM-R12-001E', 'CUST-SIM-R12-001', 'EMAIL', 'amelia.johansson@demo.com'),
+    ('CC-SIM-R12-002E', 'CUST-SIM-R12-002', 'EMAIL', 'ibrahim.alfarsi@demo.com'),
+    ('CC-SIM-R12-003E', 'CUST-SIM-R12-003', 'EMAIL', 'chloe.beaumont@demo.com'),
+    ('CC-SIM-R12-004E', 'CUST-SIM-R12-004', 'EMAIL', 'yusuf.adeyemi@demo.com')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = v.col1);
+
+-- 12d. Solar net-metering energy accounts
+INSERT INTO CUSTOMER.ENERGY_ACCOUNT
+    (ENERGY_ACCOUNT_ID, CUSTOMER_ID, ACCOUNT_NUMBER, ACCOUNT_STATUS,
+     SERVICE_TYPE, RATE_CLASS, OPEN_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('EA-SIM-R12-001', 'CUST-SIM-R12-001', 'ACCT-SIM-R12-001', 'ACTIVE', 'SOLAR',   'SOLAR_NET'),
+    ('EA-SIM-R12-002', 'CUST-SIM-R12-002', 'ACCT-SIM-R12-002', 'ACTIVE', 'SOLAR',   'SOLAR_NET'),
+    ('EA-SIM-R12-003', 'CUST-SIM-R12-003', 'ACCT-SIM-R12-003', 'ACTIVE', 'SOLAR',   'SOLAR_NET'),
+    ('EA-SIM-R12-004', 'CUST-SIM-R12-004', 'ACCT-SIM-R12-004', 'ACTIVE', 'ELECTRIC', 'SMALL_COMMERCIAL')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.ENERGY_ACCOUNT WHERE ENERGY_ACCOUNT_ID = v.col1);
+
+-- 12e. Update Round 11 industrial accounts — rate class upgrade
+UPDATE CUSTOMER.ENERGY_ACCOUNT
+SET RATE_CLASS = 'LARGE_INDUSTRIAL', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE ENERGY_ACCOUNT_ID IN ('EA-SIM-R11-001', 'EA-SIM-R11-002');
+
+-- 12f. Update Round 9 customer email
+UPDATE CUSTOMER.CUSTOMER_CONTACT
+SET CONTACT_VALUE = 'marcus.webb.new@demo.com', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CONTACT_ID = 'CC-SIM-R9-001E';
+
+-- Verification
+SELECT 'R12 customers' AS label, COUNT(*) AS cnt FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID LIKE 'CUST-SIM-R12-%'
+UNION ALL
+SELECT 'R12 energy accounts', COUNT(*) FROM CUSTOMER.ENERGY_ACCOUNT WHERE ENERGY_ACCOUNT_ID LIKE 'EA-SIM-R12-%';

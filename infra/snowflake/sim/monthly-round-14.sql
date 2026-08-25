@@ -1,0 +1,61 @@
+-- =============================================================================
+-- Monthly Load Simulation — Round 14  |  Billing Month: 2027-02
+-- =============================================================================
+-- Run as: CDP_ADMIN_ROLE  |  Database: CDP_UTIL_DB  |  Warehouse: CDP_LOADER_WH
+--
+-- SCENARIO  Correction records for January estimated reads + new accounts
+-- RATE PLANS  RES-1, RES-2, COM-1, IND-2
+-- REJECTION  REJ-M2: inverted date range → VR-USAGE-002
+-- TRIGGER    POST http://localhost:8080/api/jobs/monthly
+-- PREREQUISITE  monthly-round-13.sql must have been run.
+-- =============================================================================
+
+USE ROLE CDP_ADMIN_ROLE;
+USE DATABASE CDP_UTIL_DB;
+USE WAREHOUSE CDP_LOADER_WH;
+
+MERGE INTO BILLING.MONTHLY_USAGE tgt
+USING (
+    SELECT col1 AS UID, col2 AS EAID, col3 AS KWH, col4 AS PEAK_KW, col5 AS RATE,
+           col6 AS START_DT, col7 AS END_DT, col8 AS DAYS, col9 AS IS_CORR, col10 AS CORR_RSN
+    FROM VALUES
+        ('USG-SIM-R14-001', 'EA-SIM-R16-001',  470.000, NULL, 'RES-1',  '2027-02-01'::DATE, '2027-02-28'::DATE, 28, FALSE, NULL),
+        ('USG-SIM-R14-002', 'EA-SIM-R16-002',  485.000, NULL, 'RES-1',  '2027-02-01'::DATE, '2027-02-28'::DATE, 28, FALSE, NULL),
+        ('USG-SIM-R14-003', 'EA-SIM-R16-003', 4300.000, 19.0, 'COM-1',  '2027-02-01'::DATE, '2027-02-28'::DATE, 28, FALSE, NULL),
+        ('USG-SIM-R14-004', 'EA-SIM-R16-004',  498.000, NULL, 'RES-1',  '2027-02-01'::DATE, '2027-02-28'::DATE, 28, FALSE, NULL),
+        -- corrections for January estimated reads
+        ('USG-SIM-R14-COR1','EA-SIM-R15-001',  524.000, NULL, 'RES-1',  '2027-02-01'::DATE, '2027-02-28'::DATE, 28, TRUE,  'METER_READ_CORRECTION'),
+        ('USG-SIM-R14-COR2','EA-SIM-R15-002',  508.000, NULL, 'RES-1',  '2027-02-01'::DATE, '2027-02-28'::DATE, 28, TRUE,  'METER_READ_CORRECTION'),
+        ('USG-SIM-R14-COR3','EA-SIM-R15-004',  540.000, NULL, 'RES-1',  '2027-02-01'::DATE, '2027-02-28'::DATE, 28, TRUE,  'METER_READ_CORRECTION'),
+        -- REJ-M2: inverted date range
+        ('USG-SIM-R14-REJ', 'EA-SIM-R17-001',  475.000, NULL, 'RES-1',  '2027-02-28'::DATE, '2027-02-01'::DATE,-27, FALSE, NULL)
+        AS v(col1,col2,col3,col4,col5,col6,col7,col8,col9,col10)
+) src ON (tgt.USAGE_ID = src.UID)
+WHEN MATCHED THEN UPDATE SET KWH_USAGE = src.KWH, UPDATED_AT = CURRENT_TIMESTAMP()
+WHEN NOT MATCHED THEN INSERT
+    (USAGE_ID, ENERGY_ACCOUNT_ID, PREMISE_ID, METER_ID,
+     BILLING_MONTH, BILL_START_DATE, BILL_END_DATE, BILLING_DAYS,
+     KWH_USAGE, KWH_ADJUSTED, PEAK_DEMAND_KW,
+     PREV_METER_READING, CURR_METER_READING, READ_TYPE, RATE_PLAN,
+     FIXED_CHARGE, ENERGY_CHARGE, DEMAND_CHARGE,
+     SUBTOTAL_CHARGE, TAX_AMOUNT, TOTAL_BILLED,
+     IS_CORRECTION, CORRECTION_REASON, UPDATED_AT)
+VALUES (
+    src.UID, src.EAID, 'PREM-SIM', 'MTR-SIM',
+    '2027-02', src.START_DT, src.END_DT, src.DAYS,
+    src.KWH, src.KWH, src.PEAK_KW,
+    src.KWH * 3, src.KWH * 4, 'ACTUAL', src.RATE,
+    CASE WHEN src.PEAK_KW IS NOT NULL THEN 22.00 ELSE 8.50 END,
+    CASE WHEN src.PEAK_KW IS NOT NULL THEN ROUND(src.KWH*0.1050,2) ELSE ROUND(src.KWH*0.1150,2) END,
+    CASE WHEN src.PEAK_KW IS NOT NULL THEN ROUND(src.PEAK_KW*8.50,2) ELSE 0.00 END,
+    CASE WHEN src.PEAK_KW IS NOT NULL THEN ROUND(22.00+ROUND(src.KWH*0.1050,2)+ROUND(src.PEAK_KW*8.50,2),2)
+         ELSE ROUND(8.50+ROUND(src.KWH*0.1150,2),2) END,
+    CASE WHEN src.PEAK_KW IS NOT NULL THEN ROUND((22.00+ROUND(src.KWH*0.1050,2)+ROUND(src.PEAK_KW*8.50,2))*0.085,2)
+         ELSE ROUND((8.50+ROUND(src.KWH*0.1150,2))*0.080,2) END,
+    CASE WHEN src.PEAK_KW IS NOT NULL THEN ROUND((22.00+ROUND(src.KWH*0.1050,2)+ROUND(src.PEAK_KW*8.50,2))*1.085,2)
+         ELSE ROUND((8.50+ROUND(src.KWH*0.1150,2))*1.080,2) END,
+    src.IS_CORR, src.CORR_RSN, CURRENT_TIMESTAMP()
+);
+
+SELECT BILLING_MONTH, COUNT(*) AS rows, ROUND(SUM(KWH_USAGE),2) AS total_kwh, ROUND(SUM(TOTAL_BILLED),2) AS total_billed
+FROM BILLING.MONTHLY_USAGE WHERE USAGE_ID LIKE 'USG-SIM-R14-%' GROUP BY BILLING_MONTH;

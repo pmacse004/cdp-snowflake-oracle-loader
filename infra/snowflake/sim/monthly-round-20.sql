@@ -1,0 +1,108 @@
+-- =============================================================================
+-- Monthly Load Simulation — Round 20  |  Billing Month: 2027-08
+-- =============================================================================
+-- Run as: CDP_ADMIN_ROLE  |  Database: CDP_UTIL_DB  |  Warehouse: CDP_LOADER_WH
+--
+-- SCENARIO  Final simulation round — all customer types, two rejections, corrections
+-- RATE PLANS  RES-1, RES-2, RES-3, COM-1, COM-2, COM-3, IND-1, IND-2, SOL-1
+-- REJECTION  REJ-M1: negative KWH  |  REJ-M3: unknown rate plan
+-- TRIGGER    POST http://localhost:8080/api/jobs/monthly
+-- PREREQUISITE  monthly-round-19.sql must have been run.
+-- =============================================================================
+
+USE ROLE CDP_ADMIN_ROLE;
+USE DATABASE CDP_UTIL_DB;
+USE WAREHOUSE CDP_LOADER_WH;
+
+MERGE INTO BILLING.MONTHLY_USAGE tgt
+USING (
+    SELECT col1 AS UID, col2 AS EAID, col3 AS KWH, col4 AS PEAK_KW, col5 AS RATE, col6 AS IS_CORR, col7 AS CORR_RSN
+    FROM VALUES
+        -- Residential wave
+        ('USG-SIM-R20-001', 'EA-SIM-R19-001',  540.000, NULL, 'RES-1', FALSE, NULL),
+        ('USG-SIM-R20-002', 'EA-SIM-R19-002',  515.000, NULL, 'RES-2', FALSE, NULL),
+        ('USG-SIM-R20-003', 'EA-SIM-R19-003',  530.000, NULL, 'RES-3', FALSE, NULL),
+        -- Commercial wave
+        ('USG-SIM-R20-004', 'EA-SIM-R19-004', 4100.000, 19.0, 'COM-1', FALSE, NULL),
+        ('USG-SIM-R20-005', 'EA-SIM-R20-002', 5600.000, 27.0, 'COM-2', FALSE, NULL),
+        ('USG-SIM-R20-006', 'EA-SIM-R20-004', 4500.000, 20.0, 'COM-1', FALSE, NULL),
+        ('USG-SIM-R20-007', 'EA-SIM-R20-005', 4000.000, NULL, 'COM-3', FALSE, NULL),
+        -- Industrial wave
+        ('USG-SIM-R20-008', 'EA-SIM-R20-001',20500.000, 96.0, 'IND-1', FALSE, NULL),
+        ('USG-SIM-R20-009', 'EA-SIM-R20-003',23500.000,108.0, 'IND-2', FALSE, NULL),
+        -- Solar wave
+        ('USG-SIM-R20-010', 'EA-SIM-R12-001',  190.000, NULL, 'SOL-1', FALSE, NULL),
+        ('USG-SIM-R20-011', 'EA-SIM-R12-002',  170.000, NULL, 'SOL-1', FALSE, NULL),
+        ('USG-SIM-R20-012', 'EA-SIM-R12-003',  215.000, NULL, 'SOL-1', FALSE, NULL),
+        -- Correction record
+        ('USG-SIM-R20-COR', 'EA-SIM-R19-004', 4250.000, 20.0, 'COM-1', TRUE,  'BILLING_ADJUSTMENT'),
+        -- REJ-M1: negative KWH
+        ('USG-SIM-R20-RJ1', 'EA-SIM-R11-004', -110.000, NULL, 'RES-1', FALSE, NULL),
+        -- REJ-M3: unknown rate plan
+        ('USG-SIM-R20-RJ2', 'EA-SIM-R13-001',  505.000, NULL, 'OLD-LEGACY-PLAN', FALSE, NULL)
+        AS v(col1,col2,col3,col4,col5,col6,col7)
+) src ON (tgt.USAGE_ID = src.UID)
+WHEN MATCHED THEN UPDATE SET KWH_USAGE = src.KWH, UPDATED_AT = CURRENT_TIMESTAMP()
+WHEN NOT MATCHED THEN INSERT
+    (USAGE_ID, ENERGY_ACCOUNT_ID, PREMISE_ID, METER_ID,
+     BILLING_MONTH, BILL_START_DATE, BILL_END_DATE, BILLING_DAYS,
+     KWH_USAGE, KWH_ADJUSTED, PEAK_DEMAND_KW,
+     PREV_METER_READING, CURR_METER_READING, READ_TYPE, RATE_PLAN,
+     FIXED_CHARGE, ENERGY_CHARGE, DEMAND_CHARGE,
+     SUBTOTAL_CHARGE, TAX_AMOUNT, TOTAL_BILLED,
+     IS_CORRECTION, CORRECTION_REASON, UPDATED_AT)
+VALUES (
+    src.UID, src.EAID, 'PREM-SIM', 'MTR-SIM',
+    '2027-08', '2027-08-01'::DATE, '2027-08-31'::DATE, 31,
+    src.KWH, src.KWH, src.PEAK_KW,
+    ABS(src.KWH) * 3, ABS(src.KWH) * 4, 'ACTUAL', src.RATE,
+    CASE src.RATE WHEN 'IND-1' THEN 75.00 WHEN 'IND-2' THEN 60.00 WHEN 'COM-1' THEN 22.00 WHEN 'COM-2' THEN 22.00 WHEN 'COM-3' THEN 15.00 WHEN 'SOL-1' THEN 8.50 WHEN 'RES-3' THEN 8.50 WHEN 'RES-2' THEN 8.50 ELSE 8.50 END,
+    CASE src.RATE WHEN 'IND-1' THEN ROUND(src.KWH*0.0850,2) WHEN 'IND-2' THEN ROUND(src.KWH*0.0750,2)
+                  WHEN 'COM-1' THEN ROUND(src.KWH*0.1050,2) WHEN 'COM-2' THEN ROUND(src.KWH*0.0950,2)
+                  WHEN 'COM-3' THEN ROUND(src.KWH*0.1100,2) WHEN 'SOL-1' THEN ROUND(src.KWH*0.0700,2)
+                  WHEN 'RES-3' THEN ROUND(src.KWH*0.1050,2) WHEN 'RES-2' THEN ROUND(src.KWH*0.0900,2)
+                  ELSE              ROUND(src.KWH*0.1150,2) END,
+    CASE WHEN src.PEAK_KW IS NOT NULL AND src.RATE='IND-1' THEN ROUND(src.PEAK_KW*12.00,2)
+         WHEN src.PEAK_KW IS NOT NULL AND src.RATE='IND-2' THEN ROUND(src.PEAK_KW*10.00,2)
+         WHEN src.PEAK_KW IS NOT NULL AND src.RATE='COM-1' THEN ROUND(src.PEAK_KW*8.50,2)
+         WHEN src.PEAK_KW IS NOT NULL AND src.RATE='COM-2' THEN ROUND(src.PEAK_KW*9.00,2)
+         ELSE 0.00 END,
+    CASE src.RATE
+        WHEN 'IND-1' THEN ROUND(75.00+ROUND(src.KWH*0.0850,2)+ROUND(src.PEAK_KW*12.00,2),2)
+        WHEN 'IND-2' THEN ROUND(60.00+ROUND(src.KWH*0.0750,2)+ROUND(src.PEAK_KW*10.00,2),2)
+        WHEN 'COM-1' THEN ROUND(22.00+ROUND(src.KWH*0.1050,2)+ROUND(src.PEAK_KW*8.50,2),2)
+        WHEN 'COM-2' THEN ROUND(22.00+ROUND(src.KWH*0.0950,2)+ROUND(src.PEAK_KW*9.00,2),2)
+        WHEN 'COM-3' THEN ROUND(15.00+ROUND(src.KWH*0.1100,2),2)
+        WHEN 'SOL-1' THEN ROUND(8.50 +ROUND(src.KWH*0.0700,2),2)
+        WHEN 'RES-3' THEN ROUND(8.50 +ROUND(src.KWH*0.1050,2),2)
+        WHEN 'RES-2' THEN ROUND(8.50 +ROUND(src.KWH*0.0900,2),2)
+        ELSE              ROUND(8.50 +ROUND(src.KWH*0.1150,2),2) END,
+    CASE src.RATE
+        WHEN 'IND-1' THEN ROUND((75.00+ROUND(src.KWH*0.0850,2)+ROUND(src.PEAK_KW*12.00,2))*0.070,2)
+        WHEN 'IND-2' THEN ROUND((60.00+ROUND(src.KWH*0.0750,2)+ROUND(src.PEAK_KW*10.00,2))*0.070,2)
+        WHEN 'COM-1' THEN ROUND((22.00+ROUND(src.KWH*0.1050,2)+ROUND(src.PEAK_KW*8.50,2))*0.085,2)
+        WHEN 'COM-2' THEN ROUND((22.00+ROUND(src.KWH*0.0950,2)+ROUND(src.PEAK_KW*9.00,2))*0.085,2)
+        WHEN 'COM-3' THEN ROUND((15.00+ROUND(src.KWH*0.1100,2))*0.085,2)
+        ELSE              ROUND((8.50 +ROUND(src.KWH*0.1150,2))*0.080,2) END,
+    CASE src.RATE
+        WHEN 'IND-1' THEN ROUND((75.00+ROUND(src.KWH*0.0850,2)+ROUND(src.PEAK_KW*12.00,2))*1.070,2)
+        WHEN 'IND-2' THEN ROUND((60.00+ROUND(src.KWH*0.0750,2)+ROUND(src.PEAK_KW*10.00,2))*1.070,2)
+        WHEN 'COM-1' THEN ROUND((22.00+ROUND(src.KWH*0.1050,2)+ROUND(src.PEAK_KW*8.50,2))*1.085,2)
+        WHEN 'COM-2' THEN ROUND((22.00+ROUND(src.KWH*0.0950,2)+ROUND(src.PEAK_KW*9.00,2))*1.085,2)
+        WHEN 'COM-3' THEN ROUND((15.00+ROUND(src.KWH*0.1100,2))*1.085,2)
+        ELSE              ROUND((8.50 +ROUND(src.KWH*0.1150,2))*1.080,2) END,
+    src.IS_CORR, src.CORR_RSN, CURRENT_TIMESTAMP()
+);
+
+-- Final verification across all simulation rounds
+SELECT
+    BILLING_MONTH,
+    COUNT(*) AS row_count,
+    SUM(CASE WHEN USAGE_ID LIKE '%-REJ%' OR USAGE_ID LIKE '%-RJ%' THEN 1 ELSE 0 END) AS rejections,
+    SUM(CASE WHEN IS_CORRECTION = TRUE THEN 1 ELSE 0 END) AS corrections,
+    ROUND(SUM(KWH_USAGE), 2)    AS total_kwh,
+    ROUND(SUM(TOTAL_BILLED), 2) AS total_billed
+FROM BILLING.MONTHLY_USAGE
+WHERE USAGE_ID LIKE 'USG-SIM-R2%'
+GROUP BY BILLING_MONTH
+ORDER BY BILLING_MONTH;

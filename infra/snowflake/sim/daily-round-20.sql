@@ -1,0 +1,94 @@
+-- =============================================================================
+-- Daily Load Simulation — Round 20
+-- =============================================================================
+-- Run as: CDP_ADMIN_ROLE  |  Database: CDP_UTIL_DB  |  Warehouse: CDP_LOADER_WH
+--
+-- SCENARIO  Final wave — large commercial batch + two rejections
+-- REJECTION REJ-D1: blank FIRST_NAME (VR-CUST-001)
+--           REJ-D2: invalid email format (VR-CONT-001)
+-- TRIGGER   POST http://localhost:8080/api/jobs/daily
+-- PREREQUISITE  Round 19 (daily-round-19.sql) must have been run.
+-- =============================================================================
+
+USE ROLE CDP_ADMIN_ROLE;
+USE DATABASE CDP_UTIL_DB;
+USE WAREHOUSE CDP_LOADER_WH;
+
+-- 20a. New customers — large commercial batch
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CUST-SIM-R20-001', 'Apex',      'Logistics',   'ACTIVE', 'COMMERCIAL', 'EN'),
+    ('CUST-SIM-R20-002', 'Brightway', 'Hotels',      'ACTIVE', 'COMMERCIAL', 'EN'),
+    ('CUST-SIM-R20-003', 'Clearview', 'Tech',        'ACTIVE', 'INDUSTRIAL', 'EN'),
+    ('CUST-SIM-R20-004', 'Dawnfield', 'Farms',       'ACTIVE', 'COMMERCIAL', 'EN'),
+    ('CUST-SIM-R20-005', 'Everest',   'Publishing',  'ACTIVE', 'COMMERCIAL', 'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = v.col1);
+
+-- 20b. Rejection 1: blank FIRST_NAME
+INSERT INTO CUSTOMER.CUSTOMER
+    (CUSTOMER_ID, FIRST_NAME, LAST_NAME, ACCOUNT_STATUS, CUSTOMER_TYPE,
+     PREFERRED_LANGUAGE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES ('CUST-SIM-R20-RJ1', '', 'Incomplete Corp', 'ACTIVE', 'COMMERCIAL', 'EN')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER WHERE CUSTOMER_ID = 'CUST-SIM-R20-RJ1');
+
+-- 20c. Email contacts
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, TRUE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('CC-SIM-R20-001E', 'CUST-SIM-R20-001', 'EMAIL', 'billing@apexlogistics.demo.com'),
+    ('CC-SIM-R20-002E', 'CUST-SIM-R20-002', 'EMAIL', 'energy@brightwayhotels.demo.com'),
+    ('CC-SIM-R20-003E', 'CUST-SIM-R20-003', 'EMAIL', 'accounts@clearviewtech.demo.com'),
+    ('CC-SIM-R20-004E', 'CUST-SIM-R20-004', 'EMAIL', 'utilities@dawnfieldfarms.demo.com'),
+    ('CC-SIM-R20-005E', 'CUST-SIM-R20-005', 'EMAIL', 'finance@everestpublishing.demo.com')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = v.col1);
+
+-- 20d. Rejection 2: invalid email
+INSERT INTO CUSTOMER.CUSTOMER_CONTACT
+    (CONTACT_ID, CUSTOMER_ID, CONTACT_TYPE, CONTACT_VALUE,
+     IS_PRIMARY, IS_VERIFIED, EFFECTIVE_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, TRUE, FALSE, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES ('CC-SIM-R20-REJE', 'CUST-SIM-R20-001', 'EMAIL', 'not-an-email')
+    AS v(col1,col2,col3,col4)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.CUSTOMER_CONTACT WHERE CONTACT_ID = 'CC-SIM-R20-REJE');
+
+-- 20e. Energy accounts
+INSERT INTO CUSTOMER.ENERGY_ACCOUNT
+    (ENERGY_ACCOUNT_ID, CUSTOMER_ID, ACCOUNT_NUMBER, ACCOUNT_STATUS,
+     SERVICE_TYPE, RATE_CLASS, OPEN_DATE, CREATED_AT, UPDATED_AT)
+SELECT col1, col2, col3, col4, col5, col6, CURRENT_DATE(), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+FROM VALUES
+    ('EA-SIM-R20-001', 'CUST-SIM-R20-001', 'ACCT-SIM-R20-001', 'ACTIVE', 'ELECTRIC', 'LARGE_INDUSTRIAL'),
+    ('EA-SIM-R20-002', 'CUST-SIM-R20-002', 'ACCT-SIM-R20-002', 'ACTIVE', 'ELECTRIC', 'MEDIUM_COMMERCIAL'),
+    ('EA-SIM-R20-003', 'CUST-SIM-R20-003', 'ACCT-SIM-R20-003', 'ACTIVE', 'ELECTRIC', 'LARGE_INDUSTRIAL'),
+    ('EA-SIM-R20-004', 'CUST-SIM-R20-004', 'ACCT-SIM-R20-004', 'ACTIVE', 'ELECTRIC', 'MEDIUM_COMMERCIAL'),
+    ('EA-SIM-R20-005', 'CUST-SIM-R20-005', 'ACCT-SIM-R20-005', 'ACTIVE', 'ELECTRIC', 'MEDIUM_COMMERCIAL')
+    AS v(col1,col2,col3,col4,col5,col6)
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMER.ENERGY_ACCOUNT WHERE ENERGY_ACCOUNT_ID = v.col1);
+
+-- 20f. Final sweep — update language preferences across all sim rounds
+UPDATE CUSTOMER.CUSTOMER
+SET PREFERRED_LANGUAGE = 'EN', UPDATED_AT = CURRENT_TIMESTAMP()
+WHERE CUSTOMER_ID IN ('CUST-SIM-R17-001', 'CUST-SIM-R17-003')
+  AND PREFERRED_LANGUAGE <> 'EN';
+
+-- Verification — full simulation count
+SELECT 'Total sim customers (R11-R20)' AS label,
+       COUNT(*) AS cnt
+FROM CUSTOMER.CUSTOMER
+WHERE CUSTOMER_ID LIKE 'CUST-SIM-R1[1-9]-%'
+   OR CUSTOMER_ID LIKE 'CUST-SIM-R20-%'
+UNION ALL
+SELECT 'Total sim energy accounts (R11-R20)',
+       COUNT(*)
+FROM CUSTOMER.ENERGY_ACCOUNT
+WHERE ENERGY_ACCOUNT_ID LIKE 'EA-SIM-R1[1-9]-%'
+   OR ENERGY_ACCOUNT_ID LIKE 'EA-SIM-R20-%';
